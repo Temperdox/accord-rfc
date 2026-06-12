@@ -1,0 +1,77 @@
+name: Release (client installers)
+
+# Builds the Accord desktop CLIENT installers (the client can also host a
+# server) for Windows, macOS, and Linux when a version tag is pushed, and
+# attaches them to a GitHub Release.
+#
+# NOTE: this intentionally does NOT build or publish the standalone
+# `accord-server` deployment - only the client is released.
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+permissions:
+  contents: write # tauri-action creates the Release and uploads installers
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # Windows ships mesh-capable (the vendored wintun.dll is bundled next
+          # to the exe). macOS/Linux mesh builds are unverified, so they stay on
+          # default features until tested.
+          - os: windows-latest
+            args: "--features mesh"
+          - os: macos-latest
+            args: ""
+          - os: ubuntu-latest
+            args: ""
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Linux build dependencies (Tauri v2)
+        if: matrix.os == 'ubuntu-latest'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev \
+            build-essential curl wget file \
+            libxdo-dev libssl-dev \
+            libayatana-appindicator3-dev \
+            librsvg2-dev
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: ". -> target"
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: crates/accord-client/package-lock.json
+
+      - name: Install frontend dependencies
+        working-directory: crates/accord-client
+        run: npm ci
+
+      # tauri-action runs the configured beforeBuildCommand (npm run build),
+      # bundles per-OS installers, and uploads them to the Release for the tag.
+      - name: Build client + publish installers
+        uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          projectPath: crates/accord-client
+          args: ${{ matrix.args }}
+          tagName: ${{ github.ref_name }}
+          releaseName: "Accord ${{ github.ref_name }}"
+          releaseDraft: true
+          prerelease: true

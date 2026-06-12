@@ -1,0 +1,57 @@
+[package]
+name = "accord-server"
+version = "0.1.0"
+edition = "2024"
+description = "Accord gRPC server: auth + real-time messaging relay (tonic + PostgreSQL + Redis)."
+default-run = "accord-server"
+
+[lints]
+workspace = true
+
+[[bin]]
+name = "accord-server"
+path = "src/main.rs"
+
+[dependencies]
+# Internal - NOTE: no accord-crypto / accord-mls (server is a dumb pipe; section 5).
+accord-types.workspace = true
+accord-proto.workspace = true
+
+# Async + gRPC
+tokio.workspace = true
+tokio-stream.workspace = true
+tonic.workspace = true
+prost.workspace = true
+prost-types.workspace = true
+futures.workspace = true
+
+# Storage / cache / config / auth
+sqlx.workspace = true
+redis.workspace = true
+jsonwebtoken.workspace = true
+argon2.workspace = true
+figment.workspace = true
+async-trait.workspace = true
+socket2.workspace = true
+rcgen.workspace = true
+
+# Serialization + utility
+serde.workspace = true
+serde_json.workspace = true
+uuid.workspace = true
+chrono.workspace = true
+
+# Observability + errors
+tracing.workspace = true
+tracing-subscriber.workspace = true
+anyhow.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+# Used only by the `private_smoke` example to drive real MLS engines through the
+# server relay (proving the server never sees plaintext). The server binary
+# itself never depends on accord-mls.
+accord-mls.workspace = true
+# Used by `private_invite_smoke` to connect over a non-loopback (LAN) address, so
+# the invite gate is exercised (loopback connections are treated as device-owner).
+local-ip-address = "0.6"

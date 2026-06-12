@@ -1,0 +1,21 @@
+<component name="ProjectRunConfigurationManager">
+  <!--
+    End-to-end private (MLS) chat test: two real MLS engines exchange encrypted
+    messages through the relay, proving the server only sees ciphertext.
+    Requires the Docker stack up AND the Server run configuration running.
+  -->
+  <configuration default="false" name="Private Smoke (e2e)" type="CargoCommandRunConfiguration" factoryName="Cargo Command">
+    <option name="command" value="run -p accord-server --example private_smoke" />
+    <option name="workingDirectory" value="file://$PROJECT_DIR$" />
+    <option name="channel" value="DEFAULT" />
+    <option name="requiredFeatures" value="true" />
+    <option name="allFeatures" value="false" />
+    <option name="emulateTerminal" value="true" />
+    <option name="withSudo" value="false" />
+    <option name="buildProfile" value="dev" />
+    <envs />
+    <method v="2">
+      <option name="CARGO.BUILD_TASK_PROVIDER" enabled="true" />
+    </method>
+  </configuration>
+</component>

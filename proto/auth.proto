@@ -1,0 +1,124 @@
+// =============================================================================
+// auth.proto - Registration, login, token refresh, and device management.
+// =============================================================================
+//
+// The AuthService is the only service the server uses cryptography for directly
+// (Argon2id password verification + JWT signing). It never touches MLS key
+// material - that lives only on clients.
+//
+// Auth model (see ARCHITECTURE section 12):
+// * A short-lived JWT *access token* authorizes RPCs and the message stream.
+// * A long-lived opaque *refresh token* mints new access tokens.
+// * Each login is bound to a *device*; private chats are per-device (each
+// device is its own MLS leaf).
+// =============================================================================
+syntax = "proto3";
+package accord;
+
+import "common.proto";
+
+service AuthService {
+  // Create a new account. Fails if the username is taken.
+  rpc Register(RegisterRequest) returns (RegisterResponse);
+  // Authenticate with username + password, registering/identifying a device.
+  rpc Login(LoginRequest) returns (LoginResponse);
+  // Exchange a valid refresh token for a fresh access token.
+  rpc RefreshToken(RefreshTokenRequest) returns (RefreshTokenResponse);
+  // Attach an MLS credential + signature to the calling device so others can
+  // add it to private groups. (Used in the MLS phase; defined now for stability.)
+  rpc RegisterDevice(RegisterDeviceRequest) returns (RegisterDeviceResponse);
+  // Permanently revoke a device (e.g. lost hardware). Future MLS commits must
+  // remove its leaf from all groups.
+  rpc RevokeDevice(RevokeDeviceRequest) returns (RevokeDeviceResponse);
+  // Resolve a username to its UserId (to start a DM). Minimal directory lookup;
+  // the richer contact/verification flow is a later phase.
+  rpc LookupUser(LookupUserRequest) returns (LookupUserResponse);
+  // Owner-only: mint a new invite token for a private server. Foundation for
+  // TTL / max-use invite rotation later.
+  rpc CreateInvite(CreateInviteRequest) returns (CreateInviteResponse);
+  // Owner-only: revoke an invite token (e.g. when regenerating).
+  rpc RevokeInvite(RevokeInviteRequest) returns (RevokeInviteResponse);
+}
+
+message CreateInviteRequest {}
+
+message CreateInviteResponse {
+  // The secret invite token. The client wraps this (with the server address +
+  // mesh peers) into an opaque invite *key* for sharing.
+  string token = 1;
+}
+
+message RevokeInviteRequest {
+  string token = 1;
+}
+
+message RevokeInviteResponse {}
+
+message LookupUserRequest {
+  string username = 1;
+}
+
+message LookupUserResponse {
+  UserId user_id = 1;
+  string display_name = 2;
+}
+
+message RegisterRequest {
+  string username = 1;
+  string password = 2;
+  string display_name = 3;
+  // Required to register on a private (invite-only) server, unless this is the
+  // very first account (the server owner). Empty otherwise.
+  string invite_token = 4;
+  // The account's public identity key (Ed25519, 32 bytes). This is a per-server
+  // key the client derives from a hidden master key, so it uniquely identifies
+  // the account without any central authority. Empty if the client opts out.
+  bytes identity_pubkey = 5;
+}
+
+message RegisterResponse {
+  UserId user_id = 1;
+}
+
+message LoginRequest {
+  string username = 1;
+  string password = 2;
+  // Human-readable label for the device being logged in from (e.g. "Desktop").
+  string device_name = 3;
+}
+
+message LoginResponse {
+  string access_token = 1;
+  string refresh_token = 2;
+  UserId user_id = 3;
+  DeviceId device_id = 4;
+}
+
+message RefreshTokenRequest {
+  string refresh_token = 1;
+}
+
+message RefreshTokenResponse {
+  string access_token = 1;
+  // Rotated refresh token. The old one is invalidated on use, so an active
+  // client's session never hard-expires and a stolen token dies on first reuse.
+  string refresh_token = 2;
+}
+
+message RegisterDeviceRequest {
+  string device_name = 1;
+  // Opaque MLS credential bytes - the server stores but never interprets them.
+  bytes mls_credential = 2;
+  // Ed25519 signature proving control of the identity key.
+  bytes identity_signature = 3;
+}
+
+message RegisterDeviceResponse {
+  DeviceId device_id = 1;
+}
+
+message RevokeDeviceRequest {
+  DeviceId device_id = 1;
+}
+
+message RevokeDeviceResponse {}

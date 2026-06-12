@@ -1,0 +1,7 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "default",
+  "description": "Core permissions for the main window. Without this, Tauri v2 denies the event API entirely - JS listen() rejects and every backend-to-frontend event (incoming messages, connect status, reconnect indicator) is silently dropped.",
+  "windows": ["main"],
+  "permissions": ["core:default"]
+}

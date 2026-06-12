@@ -1,0 +1,8 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "_comment": "Dev-only overlay merged via `npm run tauri:dev`. Points the webview at the Vite dev server (started by beforeDevCommand) so frontend edits hot-reload. The base tauri.conf.json deliberately omits devUrl so a plain `cargo run -p accord-client` serves the EMBEDDED built UI instead.",
+  "build": {
+    "devUrl": "http://localhost:1420",
+    "beforeDevCommand": "npm run dev"
+  }
+}

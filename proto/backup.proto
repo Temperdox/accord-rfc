@@ -1,0 +1,57 @@
+// =============================================================================
+// backup.proto - Password-encrypted key backup (account recovery).
+// =============================================================================
+//
+// Enables multi-device usage and recovery (ARCHITECTURE section 6). The client derives
+// a wrapping key from the user's password with Argon2id, encrypts all private
+// key material with XChaCha20-Poly1305, and uploads ONLY the ciphertext blob
+// plus the public KDF parameters. The server stores opaque bytes and can never
+// decrypt them.
+//
+// Phase note: implemented in the backup phase. Defined now for wire stability.
+// =============================================================================
+syntax = "proto3";
+package accord;
+
+service BackupService {
+  rpc UploadKeyBackup(UploadKeyBackupRequest) returns (UploadKeyBackupResponse);
+  rpc DownloadKeyBackup(DownloadKeyBackupRequest) returns (DownloadKeyBackupResponse);
+  rpc UpdateKeyBackup(UpdateKeyBackupRequest) returns (UpdateKeyBackupResponse);
+  rpc DeleteKeyBackup(DeleteKeyBackupRequest) returns (DeleteKeyBackupResponse);
+}
+
+message UploadKeyBackupRequest {
+  // XChaCha20-Poly1305 ciphertext of the user's private key material.
+  bytes encrypted_blob = 1;
+  // Per-user random salt fed to Argon2id (public).
+  bytes salt = 2;
+  // Serialized Argon2id parameters (memory, iterations, parallelism) so any
+  // device can reproduce the wrapping key from the password.
+  bytes argon2_params = 3;
+  // Monotonic version for optimistic concurrency on updates.
+  uint32 version = 4;
+}
+
+message UploadKeyBackupResponse {}
+
+message DownloadKeyBackupRequest {}
+
+message DownloadKeyBackupResponse {
+  bytes encrypted_blob = 1;
+  bytes salt = 2;
+  bytes argon2_params = 3;
+  uint32 version = 4;
+}
+
+message UpdateKeyBackupRequest {
+  bytes encrypted_blob = 1;
+  bytes salt = 2;
+  bytes argon2_params = 3;
+  uint32 version = 4;
+}
+
+message UpdateKeyBackupResponse {}
+
+message DeleteKeyBackupRequest {}
+
+message DeleteKeyBackupResponse {}

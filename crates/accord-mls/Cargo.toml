@@ -1,0 +1,22 @@
+[package]
+name = "accord-mls"
+version = "0.1.0"
+edition = "2024"
+description = "Client-side MLS (RFC 9420) protocol wrapper for Accord. STUB - backed by OpenMLS in the private-chat phase."
+
+[lints]
+workspace = true
+
+[dependencies]
+accord-types.workspace = true
+accord-crypto.workspace = true
+thiserror.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+
+# MLS (RFC 9420). Lives only here + (transitively) accord-client - never the
+# server. See ARCHITECTURE.md section 5.6.
+openmls.workspace = true
+openmls_rust_crypto.workspace = true
+openmls_traits.workspace = true
+openmls_basic_credential.workspace = true

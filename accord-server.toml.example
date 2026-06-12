@@ -1,0 +1,49 @@
+# =============================================================================
+# accord-server.toml.example: sample server configuration.
+# =============================================================================
+# I copy this to accord-server.toml (gitignored) to override defaults, or set the
+# equivalent ACCORD_* environment variables. Precedence (low to high):
+#   built-in defaults  <  accord-server.toml  <  ACCORD_* env vars
+# See crates/accord-server/src/config.rs.
+# =============================================================================
+
+# Address the gRPC server listens on.
+bind_addr = "127.0.0.1:50051"
+
+# PostgreSQL. Matches docker-compose.yml (host port 55432).
+database_url = "postgres://accord:accord@localhost:55432/accord"
+
+# Redis. Matches docker-compose.yml (host port 56379).
+redis_url = "redis://localhost:56379"
+
+# --- Self-contained / client-hosted mode (no Docker) ---
+# To run with zero external services, point the database at a SQLite file and
+# leave redis_url empty (the server then uses an in-process message bus):
+#
+#   database_url = "sqlite:accord.db"
+#   redis_url    = ""
+#
+# The backend is chosen from the database_url scheme: "sqlite:" means SQLite,
+# anything else means PostgreSQL. This is what lets the desktop client bundle and
+# spawn the server with no dependencies.
+
+# JWT signing secret. I change this in any real deployment (or set
+# ACCORD_JWT_SECRET).
+jwt_secret = "dev-only-insecure-secret-change-me"
+
+# Access-token lifetime, in seconds.
+access_token_ttl_secs = 3600
+
+# Max PostgreSQL pool connections.
+db_max_connections = 10
+
+# Private server: when true, registration requires a valid invite token (the
+# first account becomes the owner). Leave false for an open/public server.
+require_invite = false
+
+# --- TLS ---
+# When both of these are set (PEM strings), the server serves over TLS. For
+# client-hosted servers the app generates and pins a self-signed cert
+# automatically via the invite key, so I usually leave these unset here.
+# tls_cert_pem = ""
+# tls_key_pem  = ""

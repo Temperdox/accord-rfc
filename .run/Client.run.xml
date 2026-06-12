@@ -1,0 +1,27 @@
+<component name="ProjectRunConfigurationManager">
+  <!--
+    Runs the Accord desktop client (Tauri). The built React frontend is embedded
+    into the binary at compile time, so this launches the full app standalone —
+    no separate dev server needed.
+
+    Prerequisite (one-time, or after frontend changes):
+        cd crates/accord-client && npm install && npm run build
+
+    For live frontend hot-reload during UI development, use a terminal instead:
+        cd crates/accord-client && npm run tauri:dev
+  -->
+  <configuration default="false" name="Client" type="CargoCommandRunConfiguration" factoryName="Cargo Command">
+    <option name="command" value="run -p accord-client" />
+    <option name="workingDirectory" value="file://$PROJECT_DIR$" />
+    <option name="channel" value="DEFAULT" />
+    <option name="requiredFeatures" value="true" />
+    <option name="allFeatures" value="false" />
+    <option name="emulateTerminal" value="true" />
+    <option name="withSudo" value="false" />
+    <option name="buildProfile" value="dev" />
+    <envs />
+    <method v="2">
+      <option name="CARGO.BUILD_TASK_PROVIDER" enabled="true" />
+    </method>
+  </configuration>
+</component>

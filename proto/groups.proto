@@ -1,0 +1,86 @@
+// =============================================================================
+// groups.proto - Channel/group lifecycle and membership management.
+// =============================================================================
+//
+// Covers both chat models:
+// * Public groups - created freely; membership/roles managed server-side.
+// * Private groups - creation carries the initial MLS Commit + Welcomes so
+// the server can bootstrap the group as an opaque relay (the server stores
+// metadata only; the cryptographic group lives on the clients).
+//
+// Roles (public chats, ARCHITECTURE section 4.1): owner > admin > moderator > member
+// > read-only.
+// =============================================================================
+syntax = "proto3";
+package accord;
+
+import "common.proto";
+import "mls.proto"; // for WelcomeTarget (private group creation carries Welcomes)
+
+service GroupService {
+  rpc CreatePublicGroup(CreatePublicGroupRequest) returns (CreateGroupResponse);
+  rpc CreatePrivateGroup(CreatePrivateGroupRequest) returns (CreateGroupResponse);
+  rpc AddMembers(AddMembersRequest) returns (AddMembersResponse);
+  rpc RemoveMembers(RemoveMembersRequest) returns (RemoveMembersResponse);
+  rpc ListGroups(ListGroupsRequest) returns (ListGroupsResponse);
+  rpc GetGroupInfo(GetGroupInfoRequest) returns (GetGroupInfoResponse);
+}
+
+message CreatePublicGroupRequest {
+  string name = 1;
+  string description = 2;
+}
+
+message CreatePrivateGroupRequest {
+  string name = 1;
+  repeated UserId member_ids = 2;
+  // The MLS Commit that creates the group with all initial members added.
+  bytes initial_commit = 3;
+  // One Welcome per added device.
+  repeated WelcomeTarget welcomes = 4;
+  // Client-chosen group id. The client creates the MLS group locally first (to
+  // produce the Welcomes), so it picks the id; the server adopts it. The MLS
+  // group id is exactly this UUID's 16 bytes, keeping client/server in sync.
+  GroupId group_id = 5;
+}
+
+message CreateGroupResponse {
+  GroupId group_id = 1;
+}
+
+message AddMembersRequest {
+  GroupId group_id = 1;
+  repeated UserId member_ids = 2;
+}
+
+message AddMembersResponse {}
+
+message RemoveMembersRequest {
+  GroupId group_id = 1;
+  repeated UserId member_ids = 2;
+}
+
+message RemoveMembersResponse {}
+
+message ListGroupsRequest {}
+
+message ListGroupsResponse {
+  repeated GroupSummary groups = 1;
+}
+
+message GroupSummary {
+  GroupId group_id = 1;
+  string name = 2;
+  ChatKind kind = 3;
+  uint32 member_count = 4;
+}
+
+message GetGroupInfoRequest {
+  GroupId group_id = 1;
+}
+
+message GetGroupInfoResponse {
+  GroupSummary summary = 1;
+  string description = 2;
+  repeated UserId member_ids = 3;
+}

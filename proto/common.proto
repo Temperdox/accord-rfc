@@ -1,0 +1,40 @@
+// =============================================================================
+// common.proto - Shared message types used across all Accord gRPC services.
+// =============================================================================
+//
+// These are the primitive identifier and envelope types referenced by every
+// other .proto file. They are deliberately thin wrappers around `string`/`bytes`
+// so the wire format stays explicit and so the Rust side can map them onto the
+// strongly-typed newtypes in the `accord-types` crate.
+//
+// All IDs are UUIDv7 rendered as their canonical hyphenated string form. UUIDv7
+// is time-sortable, which lets the server use IDs directly as coarse ordering
+// keys.
+// =============================================================================
+syntax = "proto3";
+package accord;
+
+import "google/protobuf/timestamp.proto";
+
+// Unique identifier for a user account. Stable for the account's lifetime.
+message UserId { string value = 1; }
+
+// Unique identifier for a single device (one leaf in an MLS ratchet tree).
+// A user may have many devices.
+message DeviceId { string value = 1; }
+
+// Unique identifier for a chat. A "group" is either a public channel or a
+// private MLS group (a 1:1 DM is just a private group with two members).
+message GroupId { string value = 1; }
+
+// Server-assigned unique identifier for a stored message.
+message MessageId { string value = 1; }
+
+// Distinguishes the two fundamentally different chat models. See ARCHITECTURE
+// section 4 - public chats are plaintext and server-readable; private chats are MLS
+// end-to-end encrypted and opaque to the server.
+enum ChatKind {
+  CHAT_KIND_UNSPECIFIED = 0;
+  CHAT_KIND_PUBLIC = 1;
+  CHAT_KIND_PRIVATE = 2;
+}

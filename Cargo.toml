@@ -1,0 +1,135 @@
+#==============================================================================
+# Accord - Cargo Workspace Root
+#==============================================================================
+#
+# Accord is a Rust chat platform with two communication models:
+# * Public chats - unencrypted, community-scale channels.
+# * Private chats - end-to-end encrypted (MLS, RFC 9420) DMs and groups.
+#
+# The codebase is a Cargo *workspace* so that the server and client can share a
+# single source of truth for the wire protocol (`accord-proto`), domain types
+# (`accord-types`), and (for the client only) cryptography (`accord-crypto`,
+# `accord-mls`).
+#
+# Crate dependency rules (enforced by which crates list which dependencies):
+# accord-types -> no internal deps (leaf)
+# accord-proto -> no internal deps (generated gRPC code)
+# accord-crypto -> accord-types (CLIENT-side crypto)
+# accord-mls -> accord-types, accord-crypto (CLIENT-side MLS)
+# accord-server -> accord-types, accord-proto (NEVER crypto/mls)
+# accord-client -> accord-types, accord-proto, accord-crypto, accord-mls
+#
+# IMPORTANT ARCHITECTURAL INVARIANT:
+# `accord-server` intentionally does NOT depend on `accord-mls` or
+# `accord-crypto`. The server is a "dumb pipe" for private chats - it must
+# never be able to perform MLS operations or touch plaintext key material.
+# See ARCHITECTURE.md Section 5 or Reference https://accord-rfc-site.cdbabmaina.workers.dev.
+#==============================================================================
+
+[workspace]
+resolver = "3"
+members = [
+    "crates/accord-types",
+    "crates/accord-proto",
+    "crates/accord-crypto",
+    "crates/accord-mls",
+    "crates/accord-server",
+    "crates/accord-client/src-tauri",
+]
+
+#------------------------------------------------------------------------------
+# Workspace-wide dependency versions.
+#
+# Crates reference these with `<dep>.workspace = true` so every crate uses the
+# exact same version. Pinned to the latest stable releases verified to build
+# together on rustc 1.93 (edition 2024) as of 2026-06.
+#------------------------------------------------------------------------------
+[workspace.dependencies]
+# --- Internal crates ---
+accord-types = { path = "crates/accord-types" }
+accord-proto = { path = "crates/accord-proto" }
+accord-crypto = { path = "crates/accord-crypto" }
+accord-mls = { path = "crates/accord-mls" }
+accord-server = { path = "crates/accord-server" }
+
+# --- Async runtime & gRPC transport ---
+tokio = { version = "1", features = ["full"] }
+tokio-stream = "0.1"
+tonic = { version = "0.13", features = ["tls-ring", "tls-webpki-roots"] }
+prost = "0.13"
+prost-types = "0.13"
+futures = "0.3"
+# Self-signed certificate generation for the no-PKI TLS path.
+rcgen = "0.13"
+# OS keyring (Credential Manager / Keychain / Secret Service) for the local
+# data-encryption key used to encrypt client state at rest. Pure-Rust backends
+# (no system C libs): windows-native, apple-native, sync-secret-service+crypto-rust.
+keyring = { version = "3", default-features = false, features = ["apple-native", "windows-native", "sync-secret-service", "crypto-rust"] }
+
+# --- gRPC code generation (build-dependencies) ---
+# tonic-build 0.13 + protox 0.7 are both on prost-types 0.13, so protox can
+# produce a FileDescriptorSet that tonic-build consumes directly via
+# `compile_fds` - no system `protoc` binary required.
+tonic-build = "0.13"
+protox = "0.7"
+
+# --- Serialization & shared utility ---
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+base64 = "0.22"
+uuid = { version = "1", features = ["v7", "serde"] }
+chrono = { version = "0.4", features = ["serde"] }
+thiserror = "2"
+anyhow = "1"
+
+# --- Observability ---
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+tracing-appender = "0.2"
+
+# --- Server: storage / cache / config / auth ---
+sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio", "tls-rustls", "postgres", "sqlite", "uuid", "chrono", "macros", "migrate"] }
+redis = { version = "0.27", features = ["tokio-comp", "connection-manager"] }
+jsonwebtoken = "9"
+figment = { version = "0.10", features = ["toml", "env"] }
+async-trait = "0.1"
+socket2 = "0.5"
+
+# --- MLS (client side only - RFC 9420 via OpenMLS) ---
+openmls = "0.8"
+openmls_rust_crypto = "0.5"
+openmls_traits = "0.5"
+openmls_basic_credential = "0.5"
+
+# --- Cryptography (client side) ---
+argon2 = "0.5"
+ed25519-dalek = { version = "2", features = ["rand_core"] }
+chacha20poly1305 = "0.10"
+blake3 = "1"
+zeroize = { version = "1", features = ["derive"] }
+rand = "0.8"
+rand_core = "0.6"
+
+#------------------------------------------------------------------------------
+# Workspace lints - applied to every crate via `[lints] workspace = true`.
+# We keep these as warnings (not hard errors) so iteration stays fast while
+# nudging toward clean, well-documented code.
+#------------------------------------------------------------------------------
+[workspace.lints.rust]
+unsafe_code = "warn"
+missing_debug_implementations = "warn"
+
+[workspace.lints.clippy]
+# Pragmatic clippy groups. `all` + a few `pedantic` picks that catch real issues
+# without drowning us in style noise.
+all = { level = "warn", priority = -1 }
+todo = "allow" # We intentionally use todo!() for stubbed phases.
+unwrap_used = "warn" # Prefer explicit error handling over unwrap().
+
+#------------------------------------------------------------------------------
+# Release profile: optimize hard. Crypto correctness is unaffected by opt level;
+# MLS/Argon2 benefit from optimization.
+#------------------------------------------------------------------------------
+[profile.release]
+opt-level = 3
+lto = "thin"

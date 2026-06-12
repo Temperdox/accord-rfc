@@ -1,0 +1,49 @@
+# =============================================================================
+# .gitignore — Accord
+# =============================================================================
+# Tracked on purpose (do NOT ignore): Cargo.lock + package-lock.json (lockfiles
+# for reproducible builds), crates/accord-client/src-tauri/icons/ (needed at
+# compile time), .run/ (IDE run configs), proto/, migrations/, and the docs.
+# =============================================================================
+
+# --- Rust / Cargo ---
+/target
+# rustfmt backups
+**/*.rs.bk
+
+# --- Node / frontend (Tauri client) ---
+node_modules/
+# Vite build output (regenerate with: npm run build)
+crates/accord-client/dist/
+*.tsbuildinfo
+
+# --- Tauri generated ---
+# Generated ACL/capability schemas
+crates/accord-client/src-tauri/gen/
+# Throwaway source image for `tauri icon` (the generated icons/ dir IS committed)
+crates/accord-client/app-icon.png
+
+# --- Local config / secrets (commit the *.example instead) ---
+accord-server.toml
+.env
+.env.*
+
+# --- Local databases (SQLite dev / self-contained server) ---
+*.db
+*.db-shm
+*.db-wal
+
+# --- Logs ---
+*.log
+
+# --- Architecture export / design dump (kept out of the repo) ---
+accord-data.txt
+
+# --- IDE (JetBrains RustRover / IntelliJ) ---
+# Personal IDE workspace state. Run configurations live in /.run/ and ARE tracked.
+.idea/
+
+# --- OS cruft ---
+.DS_Store
+Thumbs.db
+desktop.ini

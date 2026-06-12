@@ -1,0 +1,55 @@
+// =============================================================================
+// friends.proto - friend requests, delivered to the recipient's home node.
+// =============================================================================
+//
+// The cross-user friend flow (FEDERATION-PLAN.md): when someone pastes your fr
+// code, their client connects to YOUR home node (as an open_dms guest) and
+// leaves a friend request carrying THEIR fr code. The request is stored in your
+// node's database - so it survives restarts and waits for you even if you are
+// logged out (as long as your node is up) - and your client lists it, applies
+// your friend-request policy, and accepts or declines. Accepting sends a
+// `kind = "accept"` entry back to the requester's node the same way, carrying
+// your code, so both sides end up with each other's contact (mutual naming).
+//
+// The server stores the codes verbatim; identity verification (fingerprints)
+// stays client-side.
+// =============================================================================
+syntax = "proto3";
+package accord;
+
+import "common.proto";
+
+service FriendService {
+  // Leave a friend request (or an acceptance) for a user on this server.
+  rpc SendFriendRequest(SendFriendRequestRequest) returns (SendFriendRequestResponse);
+  // List the pending requests addressed to the authenticated user.
+  rpc ListFriendRequests(ListFriendRequestsRequest) returns (ListFriendRequestsResponse);
+  // Remove a handled (accepted/declined) request addressed to the caller.
+  rpc DeleteFriendRequest(DeleteFriendRequestRequest) returns (DeleteFriendRequestResponse);
+}
+
+message SendFriendRequestRequest {
+  // The recipient's user id on this server (from their shared fr code).
+  UserId recipient = 1;
+  // The sender's own fr code, so the recipient can add them back.
+  string contact_code = 2;
+  // "request" (asking) or "accept" (answering the recipient's earlier request).
+  string kind = 3;
+}
+message SendFriendRequestResponse {}
+
+message ListFriendRequestsRequest {}
+message FriendRequestEntry {
+  string id = 1;
+  string contact_code = 2;
+  string kind = 3;
+  int64 created_at_ms = 4;
+}
+message ListFriendRequestsResponse {
+  repeated FriendRequestEntry requests = 1;
+}
+
+message DeleteFriendRequestRequest {
+  string id = 1;
+}
+message DeleteFriendRequestResponse {}

@@ -1,0 +1,75 @@
+// =============================================================================
+// mls.proto - MLS (RFC 9420) distribution relay.
+// =============================================================================
+//
+// This service is a pure *opaque relay* (ARCHITECTURE section 5, section 8.3). Every `bytes`
+// field below is MLS protocol data the server stores and forwards but NEVER
+// parses, decrypts, or validates for content. All MLS state machine logic runs
+// client-side in `accord-mls`.
+//
+// Phase note: implemented in the private-chat phase. Defined now so the wire
+// contract is stable from day one.
+// =============================================================================
+syntax = "proto3";
+package accord;
+
+import "common.proto";
+
+service MlsService {
+  // Publish a batch of this device's KeyPackages so others can add it offline.
+  rpc UploadKeyPackages(UploadKeyPackagesRequest) returns (UploadKeyPackagesResponse);
+  // Fetch one KeyPackage per device for each requested user (to add them).
+  rpc FetchKeyPackages(FetchKeyPackagesRequest) returns (FetchKeyPackagesResponse);
+  // Relay a Commit (epoch change) to existing members + Welcomes to new ones.
+  rpc SendCommit(SendCommitRequest) returns (SendCommitResponse);
+  // Relay a standalone Welcome (e.g. re-send to a member that missed it).
+  rpc SendWelcome(SendWelcomeRequest) returns (SendWelcomeResponse);
+}
+
+message UploadKeyPackagesRequest {
+  repeated bytes key_packages = 1;
+}
+
+message UploadKeyPackagesResponse {
+  uint32 stored_count = 1;
+}
+
+message FetchKeyPackagesRequest {
+  repeated UserId user_ids = 1;
+}
+
+message FetchKeyPackagesResponse {
+  // Keyed by UserId.value -> that user's per-device KeyPackages.
+  map<string, KeyPackageBundle> packages = 1;
+}
+
+message KeyPackageBundle {
+  repeated DeviceKeyPackage device_packages = 1;
+}
+
+message DeviceKeyPackage {
+  DeviceId device_id = 1;
+  bytes key_package = 2;
+}
+
+message SendCommitRequest {
+  GroupId group_id = 1;
+  bytes commit = 2;
+  repeated WelcomeTarget welcomes = 3;
+}
+
+message SendCommitResponse {
+  uint64 epoch = 1;
+}
+
+message WelcomeTarget {
+  DeviceId device_id = 1;
+  bytes welcome = 2;
+}
+
+message SendWelcomeRequest {
+  GroupId group_id = 1;
+  repeated WelcomeTarget welcomes = 2;
+}
+
+message SendWelcomeResponse {}

@@ -1,0 +1,64 @@
+[package]
+name = "accord-client"
+version = "0.1.0"
+edition = "2024"
+description = "Accord desktop client - Tauri 2 shell wrapping a gRPC client to accord-server."
+default-run = "accord-client"
+
+# NOTE: deliberately NOT applying `[lints] workspace = true` here. Tauri's
+# generated macros (generate_handler!/generate_context!) trip some clippy lints
+# we enforce elsewhere; the client opts out to keep its build clean.
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+# Shared wire protocol + domain types + the client-side MLS engine (private chat).
+accord-proto.workspace = true
+accord-types.workspace = true
+accord-mls.workspace = true
+# Client-side crypto: the master identity key + per-server key derivation.
+accord-crypto.workspace = true
+# OS keyring for the local data-encryption key (at-rest encryption).
+keyring.workspace = true
+# Embedded server library - lets the client host its own server in-process
+# (self-hosting). The server lib still links neither accord-crypto nor
+# accord-mls, so the opaque-relay invariant holds at the crate level.
+accord-server.workspace = true
+
+tauri = { version = "2", features = [] }
+
+tokio.workspace = true
+tokio-stream.workspace = true
+tonic.workspace = true
+futures.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+uuid.workspace = true
+# Discovers the host's LAN IP to show "connect here" to other devices (dev).
+local-ip-address = "0.6"
+# Fetches the official yggdrasil-network/public-peers lists (Settings > Network).
+# rustls so no native-TLS system dependency is added.
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json"] }
+# Local UTC offset, used to infer the user's region when ranking public peers.
+chrono.workspace = true
+
+# Verbose logging to a file (captures client + embedded server + yggdrasil, which
+# all use `tracing`) so issues can be downloaded/inspected from the dev menu.
+tracing.workspace = true
+tracing-subscriber.workspace = true
+tracing-appender.workspace = true
+
+# --- Mesh mode (Phase C, opt-in `mesh` feature) ---
+# Yggdrasil-ng: encrypted IPv6 overlay. Heavy + experimental, so it is gated
+# behind the `mesh` feature and pinned to a specific git rev. Build/run mesh
+# testing with: cargo run -p accord-client --features mesh
+# default-features off drops `ckr`/`ctl`/`systemd`; we only need `tun`.
+yggdrasil = { git = "https://github.com/Revertron/Yggdrasil-ng", rev = "69164844a4b9c601607e6ba30a29cc4380de374a", package = "yggdrasil", default-features = false, features = ["tun"], optional = true }
+ed25519-dalek = { workspace = true, optional = true }
+rand = { workspace = true, optional = true }
+
+[features]
+default = []
+# Compile in the embedded Yggdrasil mesh networking mode.
+mesh = ["dep:yggdrasil", "dep:ed25519-dalek", "dep:rand"]

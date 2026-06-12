@@ -1,0 +1,23 @@
+name: CI
+
+# Fast checks on every push/PR. Excludes the Tauri client (heavy GUI build);
+# the release workflow covers building the client itself.
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+      - uses: Swatinem/rust-cache@v2
+      - name: Format check
+        run: cargo fmt --all --check
+      - name: Test (workspace, excluding the desktop client)
+        run: cargo test --workspace --exclude accord-client

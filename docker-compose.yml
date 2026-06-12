@@ -1,0 +1,71 @@
+# =============================================================================
+# docker-compose.yml - Local development backing services for Accord.
+# =============================================================================
+# Brings up the three stores the server expects (ARCHITECTURE.md section 8.1, section 17):
+# * postgres - accounts, groups, messages, MLS epoch blobs (later).
+# * redis - real-time pub/sub fan-out + presence (KeyDB is a drop-in swap).
+# * minio - S3-compatible object store for key backups / attachments (later).
+#
+# Usage:
+# docker compose up -d # start everything in the background
+# docker compose down # stop (add -v to also wipe data volumes)
+#
+# Credentials/ports here MUST match the defaults in
+# crates/accord-server/src/config.rs.
+# =============================================================================
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: accord-postgres
+    environment:
+      POSTGRES_USER: accord
+      POSTGRES_PASSWORD: accord
+      POSTGRES_DB: accord
+    ports:
+      # Host port 55432 avoids clashing with a local Postgres on 5432.
+      - "55432:5432"
+    volumes:
+      - accord-pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U accord -d accord"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    container_name: accord-redis
+    command: ["redis-server", "--appendonly", "yes"]
+    ports:
+      # Host port 56379 avoids clashing with a local Redis on 6379.
+      - "56379:6379"
+    volumes:
+      - accord-redisdata:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  minio:
+    image: minio/minio:latest
+    container_name: accord-minio
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: accord
+      MINIO_ROOT_PASSWORD: accordsecret
+    ports:
+      - "9000:9000" # S3 API
+      - "9001:9001" # web console
+    volumes:
+      - accord-miniodata:/data
+    healthcheck:
+      test: ["CMD", "mc", "ready", "local"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+volumes:
+  accord-pgdata:
+  accord-redisdata:
+  accord-miniodata:

@@ -1,0 +1,135 @@
+// =============================================================================
+// messaging.proto - Real-time message transport (the heart of Accord).
+// =============================================================================
+//
+// The primary channel is `MessageStream`, a *bidirectional* gRPC stream opened
+// once per device on login (see ARCHITECTURE section 7.3). The client sends
+// `ClientMessage`s up; the server pushes `ServerMessage`s down - incoming
+// messages, MLS handshake notifications, typing, and presence.
+//
+// Public vs private (ARCHITECTURE section 4):
+// * Public -> `content` is plaintext; the server stores and fans it out.
+// * Private -> `mls_ciphertext` is opaque; the server only relays bytes.
+//
+// Idempotency: clients stamp every outbound message with a UUIDv7
+// `client_message_id`; the server deduplicates on it (ARCHITECTURE section 7.4).
+// =============================================================================
+syntax = "proto3";
+package accord;
+
+import "common.proto";
+import "google/protobuf/timestamp.proto";
+
+service MessagingService {
+  // Long-lived bidirectional stream carrying all real-time traffic.
+  rpc MessageStream(stream ClientMessage) returns (stream ServerMessage);
+  // Paginated history for a public channel (plaintext, server-served).
+  rpc FetchPublicHistory(FetchHistoryRequest) returns (FetchPublicHistoryResponse);
+  // Paginated history for a private group (ciphertext blobs, client-decrypted).
+  rpc FetchPrivateHistory(FetchHistoryRequest) returns (FetchPrivateHistoryResponse);
+}
+
+// ---- Client -> Server ------------------------------------------------------
+
+message ClientMessage {
+  oneof payload {
+    SendPublicMessage public_message = 1;
+    SendPrivateMessage private_message = 2;
+    TypingIndicator typing = 3;
+    Ack ack = 4;
+  }
+}
+
+message SendPublicMessage {
+  GroupId group_id = 1;
+  string content = 2;
+  MessageId client_message_id = 3;
+}
+
+message SendPrivateMessage {
+  GroupId group_id = 1;
+  bytes mls_ciphertext = 2;
+  uint64 epoch = 3;
+  MessageId client_message_id = 4;
+}
+
+message TypingIndicator {
+  GroupId group_id = 1;
+  bool is_typing = 2;
+}
+
+// Acknowledges receipt of a delivered message so the server can clear it from
+// the device's offline queue.
+message Ack {
+  uint64 sequence_number = 1;
+  GroupId group_id = 2;
+}
+
+// ---- Server -> Client ------------------------------------------------------
+
+message ServerMessage {
+  oneof payload {
+    IncomingPublicMessage public_message = 1;
+    IncomingPrivateMessage private_message = 2;
+    MlsCommitNotification commit_notification = 3;
+    MlsWelcomeNotification welcome_notification = 4;
+    TypingIndicator typing = 5;
+    PresenceUpdate presence = 6;
+  }
+}
+
+message IncomingPublicMessage {
+  MessageId message_id = 1;
+  GroupId group_id = 2;
+  UserId sender_id = 3;
+  string sender_display_name = 4;
+  string content = 5;
+  google.protobuf.Timestamp timestamp = 6;
+  uint64 sequence_number = 7;
+}
+
+message IncomingPrivateMessage {
+  GroupId group_id = 1;
+  UserId sender_id = 2;
+  bytes mls_ciphertext = 3;
+  uint64 epoch = 4;
+  google.protobuf.Timestamp timestamp = 5;
+  uint64 sequence_number = 6;
+}
+
+// Notifies a member that the group epoch advanced (someone committed).
+message MlsCommitNotification {
+  GroupId group_id = 1;
+  bytes commit = 2;
+  uint64 epoch = 3;
+}
+
+// Delivered to a newly added device so it can join an existing group.
+message MlsWelcomeNotification {
+  GroupId group_id = 1;
+  bytes welcome = 2;
+}
+
+message PresenceUpdate {
+  UserId user_id = 1;
+  bool online = 2;
+  google.protobuf.Timestamp last_seen = 3;
+}
+
+// ---- History ---------------------------------------------------------------
+
+message FetchHistoryRequest {
+  GroupId group_id = 1;
+  // Return messages strictly older than this sequence number (for paging up).
+  // Zero means "from the newest".
+  uint64 before_sequence = 2;
+  uint32 limit = 3;
+}
+
+message FetchPublicHistoryResponse {
+  repeated IncomingPublicMessage messages = 1;
+}
+
+message FetchPrivateHistoryResponse {
+  repeated IncomingPrivateMessage messages = 1;
+}

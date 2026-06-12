@@ -1,0 +1,22 @@
+<component name="ProjectRunConfigurationManager">
+  <!--
+    Runs the Accord gRPC server. Requires the Docker stack to be up first
+    (`docker compose up -d`). Pick this from the green ▶ run-configuration menu.
+  -->
+  <configuration default="false" name="Server" type="CargoCommandRunConfiguration" factoryName="Cargo Command">
+    <option name="command" value="run -p accord-server" />
+    <option name="workingDirectory" value="file://$PROJECT_DIR$" />
+    <option name="channel" value="DEFAULT" />
+    <option name="requiredFeatures" value="true" />
+    <option name="allFeatures" value="false" />
+    <option name="emulateTerminal" value="true" />
+    <option name="withSudo" value="false" />
+    <option name="buildProfile" value="dev" />
+    <envs>
+      <env name="RUST_LOG" value="info,accord_server=debug" />
+    </envs>
+    <method v="2">
+      <option name="CARGO.BUILD_TASK_PROVIDER" enabled="true" />
+    </method>
+  </configuration>
+</component>

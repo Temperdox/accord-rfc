@@ -1,0 +1,22 @@
+[package]
+name = "accord-proto"
+version = "0.1.0"
+edition = "2024"
+description = "Generated gRPC/protobuf code (prost + tonic) shared by Accord client and server."
+build = "build.rs"
+
+[lints]
+workspace = true
+
+[dependencies]
+tonic.workspace = true
+prost.workspace = true
+prost-types.workspace = true
+
+[build-dependencies]
+# protox compiles the .proto files to a FileDescriptorSet in pure Rust, so no
+# system `protoc` binary is required. tonic-build then turns that descriptor set
+# into client + server Rust code. Both are on prost-types 0.13, so the
+# descriptor types line up.
+tonic-build.workspace = true
+protox.workspace = true

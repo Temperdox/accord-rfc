@@ -1,0 +1,45 @@
+// =============================================================================
+// vault.proto - per-account store of opaque, client-encrypted blobs.
+// =============================================================================
+//
+// A small key-value store the client uses to back up state that should survive a
+// reinstall: the MLS session state and the encrypted message-history archive.
+// Every blob is encrypted on the client under a key derived from the master key,
+// so the server only ever holds opaque bytes and can never read them. Blobs are
+// keyed by a client-chosen name (e.g. "mls-state", "hist/<group-id>") and are
+// deleted with the account.
+// =============================================================================
+syntax = "proto3";
+package accord;
+
+service VaultService {
+  rpc PutBlob(PutBlobRequest) returns (PutBlobResponse);
+  rpc GetBlob(GetBlobRequest) returns (GetBlobResponse);
+  rpc ListBlobs(ListBlobsRequest) returns (ListBlobsResponse);
+  rpc DeleteBlob(DeleteBlobRequest) returns (DeleteBlobResponse);
+}
+
+message PutBlobRequest {
+  string name = 1;
+  bytes blob = 2; // opaque, client-encrypted
+}
+message PutBlobResponse {}
+
+message GetBlobRequest {
+  string name = 1;
+}
+message GetBlobResponse {
+  bytes blob = 1;
+}
+
+message ListBlobsRequest {
+  string prefix = 1; // optional; empty lists all names for the account
+}
+message ListBlobsResponse {
+  repeated string names = 1;
+}
+
+message DeleteBlobRequest {
+  string name = 1;
+}
+message DeleteBlobResponse {}

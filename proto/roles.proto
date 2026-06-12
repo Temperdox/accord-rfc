@@ -1,0 +1,74 @@
+// =============================================================================
+// roles.proto - Roles & permissions API (Discord-style RBAC).
+// =============================================================================
+//
+// A role carries a permission bitfield (see accord-types::perms). Members are
+// assigned roles; the server computes effective permissions and enforces them on
+// every privileged action. `permissions` is a **decimal string** (a u64 can
+// exceed JavaScript's safe-integer range).
+//
+// Management RPCs require MANAGE_ROLES; granting/holding ADMINISTRATOR requires
+// the caller to already be an administrator (anti-privilege-escalation).
+// =============================================================================
+syntax = "proto3";
+package accord;
+
+import "common.proto";
+
+service RoleService {
+  rpc ListRoles(ListRolesRequest) returns (ListRolesResponse);
+  rpc CreateRole(CreateRoleRequest) returns (Role);
+  rpc UpdateRole(UpdateRoleRequest) returns (Role);
+  rpc DeleteRole(DeleteRoleRequest) returns (DeleteRoleResponse);
+  rpc AssignRole(AssignRoleRequest) returns (AssignRoleResponse);
+  rpc UnassignRole(UnassignRoleRequest) returns (UnassignRoleResponse);
+  // The caller's own effective permissions (for the UI to gate actions).
+  rpc GetMyPermissions(GetMyPermissionsRequest) returns (GetMyPermissionsResponse);
+}
+
+message Role {
+  string id = 1;
+  string name = 2;
+  string permissions = 3; // u64 bitfield as a decimal string
+  int32 position = 4;
+  bool is_default = 5; // the @everyone base role
+}
+
+message ListRolesRequest {}
+message ListRolesResponse {
+  repeated Role roles = 1;
+}
+
+message CreateRoleRequest {
+  string name = 1;
+  string permissions = 2;
+}
+
+message UpdateRoleRequest {
+  string id = 1;
+  string name = 2;
+  string permissions = 3;
+}
+
+message DeleteRoleRequest {
+  string id = 1;
+}
+message DeleteRoleResponse {}
+
+message AssignRoleRequest {
+  UserId user_id = 1;
+  string role_id = 2;
+}
+message AssignRoleResponse {}
+
+message UnassignRoleRequest {
+  UserId user_id = 1;
+  string role_id = 2;
+}
+message UnassignRoleResponse {}
+
+message GetMyPermissionsRequest {}
+message GetMyPermissionsResponse {
+  string permissions = 1;
+  bool is_owner = 2;
+}

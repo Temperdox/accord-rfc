@@ -1,0 +1,823 @@
+/* Accord client styling - a compact dark theme. */
+:root {
+  --bg: #1e1f26;
+  --bg-alt: #2a2c36;
+  --bg-input: #1a1b21;
+  --accent: #7c5cff;
+  --accent-dim: #5b44c0;
+  --text: #e6e6ec;
+  --text-dim: #9a9aa8;
+  --danger: #ff6b6b;
+  --border: #3a3c48;
+  font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+  margin: 0;
+  height: 100%;
+  background: var(--bg);
+  color: var(--text);
+}
+/* The app shell stacks vertically and fills the window without overflowing. */
+#root {
+  display: flex;
+  flex-direction: column;
+}
+
+/* ---- Auth screen ---- */
+.auth {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex: 1;
+  min-height: 0;
+}
+.auth-card {
+  width: 360px;
+  padding: 32px;
+  background: var(--bg-alt);
+  border-radius: 12px;
+  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.4);
+}
+.brand {
+  margin: 0;
+  font-size: 32px;
+  background: linear-gradient(90deg, var(--accent), #a98bff);
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+}
+.subtitle {
+  margin: 4px 0 24px;
+  color: var(--text-dim);
+  font-size: 13px;
+}
+.hint {
+  opacity: 0.6;
+}
+input {
+  width: 100%;
+  margin-top: 4px;
+  padding: 9px 10px;
+  background: var(--bg-input);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  color: var(--text);
+  font-size: 14px;
+}
+input:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+.row {
+  display: flex;
+  gap: 10px;
+  margin-top: 8px;
+}
+/* Buttons that share a horizontal row split the width evenly. */
+.row button,
+.auth-card form > button {
+  flex: 1;
+  width: 100%;
+}
+button {
+  padding: 10px;
+  background: var(--accent);
+  color: white;
+  border: none;
+  border-radius: 6px;
+  font-size: 14px;
+  font-weight: 600;
+  cursor: pointer;
+}
+button:hover:not(:disabled) {
+  background: var(--accent-dim);
+}
+button:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+button.ghost {
+  background: transparent;
+  border: 1px solid var(--border);
+  color: var(--text);
+}
+.error {
+  color: var(--danger);
+  font-size: 13px;
+  margin-bottom: 12px;
+}
+
+/* ---- Tabs / segmented controls ---- */
+.tabs {
+  display: flex;
+  gap: 4px;
+  margin-bottom: 18px;
+}
+.tab,
+.seg {
+  flex: 1;
+  background: transparent;
+  border: 1px solid var(--border);
+  color: var(--text-dim);
+  padding: 8px;
+  border-radius: 6px;
+  font-weight: 600;
+  font-size: 13px;
+}
+.tab.active,
+.seg.active {
+  background: var(--accent-dim);
+  color: #fff;
+  border-color: var(--accent-dim);
+}
+
+/* ---- Invite key textarea ---- */
+textarea,
+.invite-input {
+  width: 100%;
+  margin-top: 4px;
+  padding: 9px 10px;
+  background: var(--bg-input);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  color: var(--text);
+  font-size: 12px;
+  font-family: ui-monospace, "Cascadia Code", Consolas, monospace;
+  resize: vertical;
+  box-sizing: border-box;
+}
+textarea:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+
+.invite-btn {
+  width: 100%;
+  margin-top: 10px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  background: transparent;
+  border: 1px solid var(--border);
+  color: var(--text-dim);
+  font-weight: 600;
+}
+.invite-btn:hover {
+  background: var(--bg-alt);
+  color: var(--text);
+}
+
+/* ---- Modal ---- */
+.modal-backdrop {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.55);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 50;
+}
+.modal {
+  background: var(--bg-alt);
+  padding: 24px;
+  border-radius: 12px;
+  width: 460px;
+  max-width: 90vw;
+  box-shadow: 0 16px 48px rgba(0, 0, 0, 0.5);
+}
+.modal h3 {
+  margin: 0 0 12px;
+}
+.modal-close {
+  margin-top: 12px;
+  width: 100%;
+}
+
+/* ---- Chat screen ---- */
+/* App shell: server rail on the far left, then the chat columns. */
+.app {
+  display: flex;
+  flex: 1;
+  min-height: 0;
+}
+.server-rail {
+  width: 64px;
+  background: #15161b;
+  border-right: 1px solid var(--border);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 0;
+}
+.rail-server,
+.rail-add {
+  position: relative;
+  width: 44px;
+  height: 44px;
+  border-radius: 50%;
+  border: none;
+  background: #2a2c36;
+  color: #cdd0e0;
+  font-weight: 700;
+  font-size: 14px;
+  cursor: pointer;
+  transition: border-radius 0.15s ease, background 0.15s ease;
+}
+.rail-divider {
+  width: 32px;
+  height: 2px;
+  background: var(--border);
+  border-radius: 1px;
+  margin: 2px 0;
+  flex-shrink: 0;
+}
+.rail-badge {
+  position: absolute;
+  bottom: -2px;
+  right: -2px;
+  min-width: 18px;
+  height: 18px;
+  padding: 0 5px;
+  border-radius: 9px;
+  background: #f23f42;
+  color: #fff;
+  font-size: 11px;
+  font-weight: 700;
+  line-height: 18px;
+  text-align: center;
+  border: 2px solid #15161b;
+}
+.rail-server:hover,
+.rail-add:hover {
+  border-radius: 16px;
+  background: #5865f2;
+  color: #fff;
+}
+.rail-server.active {
+  border-radius: 16px;
+  background: #5865f2;
+  color: #fff;
+}
+.rail-add {
+  background: transparent;
+  border: 1px dashed #3a3d4a;
+  color: #7bdc91;
+  font-size: 20px;
+  margin-top: auto;
+}
+.chat {
+  display: flex;
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+}
+.sidebar {
+  width: 240px;
+  background: #181920;
+  border-right: 1px solid var(--border);
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+.sidebar-scroll {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 8px;
+}
+.sidebar-header {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--text-dim);
+  padding: 8px;
+}
+.channel {
+  display: flex;
+  align-items: center;
+  width: 100%;
+  text-align: left;
+  background: transparent;
+  color: var(--text-dim);
+  font-weight: 500;
+  padding: 8px 10px;
+  border-radius: 6px;
+  margin-bottom: 2px;
+}
+.channel:hover {
+  background: var(--bg-alt);
+  color: var(--text);
+}
+.channel.active {
+  background: var(--accent-dim);
+  color: white;
+}
+.hash {
+  opacity: 0.5;
+  margin-right: 6px;
+}
+.dm-form {
+  display: flex;
+  gap: 6px;
+  margin-top: 8px;
+  padding: 4px 0;
+}
+.dm-form input {
+  margin-top: 0;
+  font-size: 13px;
+}
+.dm-form button {
+  flex: 0 0 auto;
+  width: 64px;
+  font-size: 13px;
+  padding: 8px 6px;
+}
+.error.small {
+  font-size: 11px;
+  padding: 0 8px 8px;
+}
+
+/* ---- DM home (Direct Messages view) ---- */
+.divider {
+  height: 1px;
+  background: var(--border);
+  margin: 8px 4px;
+}
+.sidebar-empty,
+.empty-note {
+  color: var(--text-dim);
+  font-size: 13px;
+  padding: 8px;
+}
+.empty-note.center {
+  text-align: center;
+  margin: auto;
+  max-width: 420px;
+  line-height: 1.6;
+}
+.dm-avatar {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  margin-right: 8px;
+  border-radius: 50%;
+  background: var(--accent-dim);
+  color: #fff;
+  font-size: 11px;
+  font-weight: 700;
+  flex-shrink: 0;
+}
+.dm-body {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 18px;
+}
+.dm-subhead {
+  margin: 0 0 4px;
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--text-dim);
+}
+.dm-conversation {
+  flex: 1;
+  display: flex;
+  min-height: 0;
+}
+.icon-btn {
+  width: 34px;
+  height: 34px;
+  padding: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+/* ---- User card (bottom of sidebar) ---- */
+.user-card {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 10px;
+  background: #15161b;
+  border-top: 1px solid var(--border);
+}
+.user-avatar {
+  width: 32px;
+  height: 32px;
+  border-radius: 50%;
+  background: var(--accent-dim);
+  color: #fff;
+  font-weight: 700;
+  font-size: 14px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+.user-info {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  flex: 1;
+}
+.user-name {
+  font-size: 13px;
+  font-weight: 600;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.user-status {
+  font-size: 11px;
+  color: #7bdc91;
+}
+.user-gear {
+  flex: 0 0 auto;
+  width: 32px;
+  height: 32px;
+  padding: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: transparent;
+  color: var(--text-dim);
+  border-radius: 6px;
+}
+.user-gear:hover:not(:disabled) {
+  background: var(--bg-alt);
+  color: var(--text);
+}
+
+/* ---- Settings ---- */
+.settings-section {
+  margin-bottom: 18px;
+}
+.settings-section h4 {
+  margin: 0 0 8px;
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--text-dim);
+}
+.hint.warn {
+  color: #e0a030;
+  opacity: 1;
+}
+
+/* ---- Settings: left nav tabs ---- */
+.settings-modal {
+  width: 680px;
+}
+.settings-body {
+  display: flex;
+  gap: 16px;
+  min-height: 360px;
+}
+.settings-nav {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  width: 140px;
+  flex-shrink: 0;
+  border-right: 1px solid var(--border);
+  padding-right: 12px;
+}
+.settings-nav-item {
+  text-align: left;
+  background: transparent;
+  color: var(--text-dim);
+  font-weight: 500;
+  padding: 8px 10px;
+  border-radius: 6px;
+}
+.settings-nav-item:hover:not(:disabled) {
+  background: var(--bg-input);
+  color: var(--text);
+}
+.settings-nav-item.active {
+  background: var(--accent-dim);
+  color: #fff;
+}
+.settings-content {
+  flex: 1;
+  min-width: 0;
+  overflow-y: auto;
+  max-height: 420px;
+}
+
+/* ---- Yggdrasil tab: segmented pill, instructions, connect status ---- */
+.seg-pill {
+  display: flex;
+  gap: 4px;
+  background: var(--bg-input);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  padding: 4px;
+  margin-bottom: 12px;
+}
+.seg-pill button {
+  flex: 1;
+  background: transparent;
+  color: var(--text-dim);
+  border-radius: 999px;
+  padding: 7px 10px;
+  font-size: 13px;
+  font-weight: 600;
+  transition:
+    background 0.18s ease,
+    color 0.18s ease;
+}
+.seg-pill button:hover:not(.active) {
+  color: var(--text);
+}
+.seg-pill button.active {
+  background: var(--accent);
+  color: #fff;
+}
+.ygg-instructions {
+  max-height: 150px;
+  overflow-y: auto;
+  background: var(--bg-input);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 10px 12px;
+  font-size: 12px;
+  line-height: 1.55;
+  margin-bottom: 8px;
+}
+.ygg-instructions ol {
+  margin: 6px 0 0;
+  padding-left: 18px;
+}
+.ygg-instructions code {
+  background: rgba(0, 0, 0, 0.35);
+  padding: 0 4px;
+  border-radius: 4px;
+}
+.conn-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 10px;
+}
+.throbber {
+  width: 16px;
+  height: 16px;
+  flex-shrink: 0;
+  border: 2px solid rgba(224, 160, 48, 0.25);
+  border-top-color: #e0a030;
+  border-radius: 50%;
+  animation: throb-spin 0.8s linear infinite;
+}
+@keyframes throb-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+.conn-status {
+  font-size: 13px;
+}
+.conn-status.connecting {
+  color: #e0a030;
+}
+.conn-status.error {
+  color: var(--danger);
+}
+.conn-status.ok {
+  color: #7bdc91;
+}
+
+.main {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+.main-header {
+  padding: 14px 18px;
+  border-bottom: 1px solid var(--border);
+  font-weight: 600;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+.header-right {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+}
+.reconnecting {
+  font-size: 12px;
+  font-weight: 500;
+  color: #e0a030;
+  animation: reconnect-pulse 1.2s ease-in-out infinite;
+}
+.auth-foot {
+  margin-top: 16px;
+  text-align: center;
+}
+.account-pills {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-bottom: 16px;
+}
+.account-pill {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  padding: 8px 12px;
+  background: var(--bg-input);
+  border: 1px solid var(--border);
+  color: var(--text);
+  border-radius: 8px;
+  font-weight: 600;
+  text-align: left;
+}
+.account-pill:hover:not(:disabled) {
+  background: var(--bg-alt);
+}
+.account-pill.active {
+  border-color: var(--accent);
+}
+.pill-avatar {
+  width: 32px;
+  height: 32px;
+  border-radius: 50%;
+  background: var(--accent-dim);
+  color: #fff;
+  font-weight: 700;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+.pill-name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.pill-tag {
+  font-size: 10px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--text-dim);
+  background: rgba(255, 255, 255, 0.06);
+  padding: 2px 6px;
+  border-radius: 4px;
+}
+.auth-alt {
+  display: flex;
+  justify-content: center;
+  gap: 16px;
+  margin-top: 14px;
+}
+button.link {
+  width: auto;
+  flex: 0 0 auto;
+  padding: 4px;
+  background: transparent;
+  color: var(--accent);
+  font-size: 13px;
+  font-weight: 500;
+}
+button.link:hover:not(:disabled) {
+  background: transparent;
+  text-decoration: underline;
+}
+.contact-list {
+  margin-top: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  max-height: 240px;
+  overflow-y: auto;
+}
+.contact-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 8px 10px;
+  background: #1d1f27;
+  border-radius: 8px;
+}
+.contact-meta {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+.contact-name {
+  font-weight: 600;
+}
+.verified-badge {
+  font-size: 11px;
+  font-weight: 600;
+  color: #7bdc91;
+}
+.blocked-badge {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--danger);
+}
+.contact-fp {
+  font-family: monospace;
+  font-size: 12px;
+  opacity: 0.7;
+}
+.contact-actions {
+  display: flex;
+  gap: 6px;
+  flex-shrink: 0;
+}
+@keyframes reconnect-pulse {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.4;
+  }
+}
+.messages {
+  flex: 1;
+  overflow-y: auto;
+  padding: 16px 18px;
+}
+/* Glint/skeleton placeholders for received messages still being decrypted. */
+.message.pending .glint {
+  border-radius: 6px;
+  background: linear-gradient(
+    90deg,
+    rgba(255, 255, 255, 0.06) 25%,
+    rgba(255, 255, 255, 0.16) 37%,
+    rgba(255, 255, 255, 0.06) 63%
+  );
+  background-size: 400% 100%;
+  animation: glint-shimmer 1.2s ease-in-out infinite;
+}
+.glint-author {
+  width: 96px;
+  height: 12px;
+  margin-bottom: 8px;
+}
+.glint-body {
+  width: 60%;
+  height: 14px;
+}
+@keyframes glint-shimmer {
+  0% {
+    background-position: 100% 50%;
+  }
+  100% {
+    background-position: 0 50%;
+  }
+}
+.message {
+  margin-bottom: 14px;
+}
+.author {
+  font-weight: 600;
+  margin-right: 8px;
+}
+.time {
+  font-size: 11px;
+  color: var(--text-dim);
+}
+.body {
+  margin-top: 2px;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+.composer {
+  display: flex;
+  gap: 8px;
+  padding: 12px 18px;
+  border-top: 1px solid var(--border);
+}
+.composer input {
+  flex: 1;
+  margin-top: 0;
+}
+.composer button {
+  flex: 0 0 auto;
+  width: 90px;
+}

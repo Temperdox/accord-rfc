@@ -1,0 +1,28 @@
+<component name="ProjectRunConfigurationManager">
+  <!--
+    Runs the Accord gRPC server self-contained: SQLite file + in-process bus,
+    NO Docker / Postgres / Redis required. This is the same backend the shipped
+    client embeds. Pick this from the green run-configuration menu.
+
+    ACCORD_DATABASE_URL=sqlite:... selects SQLite; an empty ACCORD_REDIS_URL
+    selects the in-process message bus. The DB file is created on first run.
+  -->
+  <configuration default="false" name="Server (SQLite, no Docker)" type="CargoCommandRunConfiguration" factoryName="Cargo Command">
+    <option name="command" value="run -p accord-server" />
+    <option name="workingDirectory" value="file://$PROJECT_DIR$" />
+    <option name="channel" value="DEFAULT" />
+    <option name="requiredFeatures" value="true" />
+    <option name="allFeatures" value="false" />
+    <option name="emulateTerminal" value="true" />
+    <option name="withSudo" value="false" />
+    <option name="buildProfile" value="dev" />
+    <envs>
+      <env name="RUST_LOG" value="info,accord_server=debug" />
+      <env name="ACCORD_DATABASE_URL" value="sqlite:accord-dev.db" />
+      <env name="ACCORD_REDIS_URL" value="" />
+    </envs>
+    <method v="2">
+      <option name="CARGO.BUILD_TASK_PROVIDER" enabled="true" />
+    </method>
+  </configuration>
+</component>
