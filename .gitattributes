@@ -1,0 +1,15 @@
+# sqlx embeds migration FILES at compile time and checksums their raw bytes;
+# a database migrated by one build rejects another build if line endings
+# differ ("migration N was previously applied but has been modified"). CI
+# runners check out with core.autocrlf=true, so without this rule CI builds
+# embed CRLF while local LF checkouts embed LF. Force LF everywhere so every
+# build of the same commit embeds identical bytes. (The server also self-heals
+# ending-only mismatches at startup; this rule stops creating them.)
+*.sql text eol=lf
+
+# Never let git touch binary assets.
+*.dll binary
+*.ico binary
+*.icns binary
+*.png binary
+*.db binary

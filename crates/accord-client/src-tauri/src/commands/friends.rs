@@ -16,7 +16,8 @@
 
 use accord_proto::friend_service_client::FriendServiceClient;
 use accord_proto::{
-    DeleteFriendRequestRequest, ListFriendRequestsRequest, SendFriendRequestRequest, UserId,
+    DeleteFriendRequestRequest, GetPublicProfileRequest, ListFriendRequestsRequest,
+    SendFriendRequestRequest, UserId,
 };
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter, Manager};
@@ -43,6 +44,13 @@ struct OutboxEntry {
     my_display: String,
     sent_at_ms: i64,
     delivered: bool,
+    /// The peer's live account data, fetched from their home node on delivery
+    /// (the code only carries a snapshot). `None` until a fetch succeeds;
+    /// `serde(default)` keeps outboxes from before these fields loading.
+    #[serde(default)]
+    peer_username: Option<String>,
+    #[serde(default)]
+    peer_display: Option<String>,
 }
 
 /// An incoming friend request for the UI.
@@ -58,15 +66,30 @@ pub struct IncomingRequestDto {
     pub created_at_ms: i64,
 }
 
-/// An outgoing request as shown in "Pending sent".
+/// An outgoing request as shown in "Pending sent" (and as a placeholder row in
+/// the Friends list until accepted).
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PendingSentDto {
     pub peer_id: String,
+    /// Name from the pasted code (placeholder until the profile fetch).
     pub name: String,
     pub fingerprint: String,
     pub delivered: bool,
     pub sent_at_ms: i64,
+    /// Live account data from their home node, once delivery succeeded.
+    pub username: Option<String>,
+    pub display_name: Option<String>,
+}
+
+/// What a pasted code identifies, without sending anything (drives the
+/// send-button state: gray when the pasted code is already pending).
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CodePeek {
+    pub peer_id: String,
+    pub name: String,
+    pub fingerprint: String,
 }
 
 /// Result of a sync: what to render in the Friend Requests view.
@@ -129,7 +152,13 @@ fn target_from_code(code: &str) -> Result<(ContactTarget, Vec<u8>), String> {
 }
 
 /// Deliver one outbox entry to the peer's home node. Errors mean "retry later".
-async fn deliver(app: &AppHandle, entry: &OutboxEntry) -> Result<(), String> {
+///
+/// On success this also fetches the peer's live public profile (username,
+/// display name; avatar/banner once those ship) over the same guest session and
+/// stores it on the entry, so the pending UI shows real account data instead of
+/// the snapshot baked into the pasted code. The fetch is best-effort: a profile
+/// failure never fails the delivery (sync backfills it later).
+async fn deliver(app: &AppHandle, entry: &mut OutboxEntry) -> Result<(), String> {
     let (target, _identity) = target_from_code(&entry.peer_code)?;
     let recipient = target
         .host_user_id
@@ -138,10 +167,13 @@ async fn deliver(app: &AppHandle, entry: &OutboxEntry) -> Result<(), String> {
     let guest = crate::commands::mls::guest_login(app, &target, &entry.my_display).await?;
     // A fresh code each delivery so the peer gets our current addresses.
     let my_code = contacts::my_contact_code(app.clone(), Some(entry.my_display.clone())).await?;
-    FriendServiceClient::new(guest.channel)
+    let mut client = FriendServiceClient::new(guest.channel);
+    client
         .send_friend_request(authed(
             Request::new(SendFriendRequestRequest {
-                recipient: Some(UserId { value: recipient }),
+                recipient: Some(UserId {
+                    value: recipient.clone(),
+                }),
                 contact_code: my_code,
                 kind: entry.kind.clone(),
             }),
@@ -149,6 +181,20 @@ async fn deliver(app: &AppHandle, entry: &OutboxEntry) -> Result<(), String> {
         )?)
         .await
         .map_err(status_to_string)?;
+
+    let profile_req = authed(
+        Request::new(GetPublicProfileRequest {
+            user_id: Some(UserId { value: recipient }),
+        }),
+        &guest.token,
+    );
+    if let Ok(req) = profile_req
+        && let Ok(profile) = client.get_public_profile(req).await
+    {
+        let profile = profile.into_inner();
+        entry.peer_username = Some(profile.username);
+        entry.peer_display = Some(profile.display_name);
+    }
     Ok(())
 }
 
@@ -189,20 +235,60 @@ pub async fn send_friend_request(
         my_display,
         sent_at_ms: now_ms(),
         delivered: false,
+        peer_username: None,
+        peer_display: None,
     };
-    entry.delivered = deliver(&app, &entry).await.is_ok();
+    entry.delivered = deliver(&app, &mut entry).await.is_ok();
 
     let mut outbox = load_outbox(&app);
     outbox.retain(|e| !(e.peer_id == peer_id && e.kind == "request"));
     outbox.push(entry.clone());
     save_outbox(&app, &outbox)?;
+    let _ = app.emit("friends-changed", ());
 
-    Ok(PendingSentDto {
+    Ok(pending_dto(&entry))
+}
+
+/// Re-attempt delivery of a pending request right now (their node upserts, so
+/// re-sending an already-delivered request is harmless - it refreshes the code
+/// they hold and the profile data we hold).
+#[tauri::command]
+pub async fn resend_friend_request(
+    app: AppHandle,
+    peer_id: String,
+    my_display: String,
+) -> Result<PendingSentDto, String> {
+    let mut outbox = load_outbox(&app);
+    let entry = outbox
+        .iter_mut()
+        .find(|e| e.peer_id == peer_id && e.kind == "request")
+        .ok_or("no pending request for this contact")?;
+    if entry.my_display.is_empty() {
+        entry.my_display = my_display;
+    }
+    entry.delivered = deliver(&app, entry).await.is_ok();
+    entry.sent_at_ms = now_ms();
+    let dto = pending_dto(entry);
+    let delivered = entry.delivered;
+    save_outbox(&app, &outbox)?;
+    let _ = app.emit("friends-changed", ());
+    if delivered {
+        Ok(dto)
+    } else {
+        Err("still unreachable - the request stays queued and retries automatically".to_owned())
+    }
+}
+
+/// Decode a pasted code locally (nothing is sent). Drives the send-button
+/// state: the UI grays the button when the pasted code's peer already has a
+/// pending request.
+#[tauri::command]
+pub fn peek_contact_code(code: String) -> Result<CodePeek, String> {
+    let (target, identity) = target_from_code(code.trim())?;
+    Ok(CodePeek {
+        peer_id: contacts::to_hex(&identity),
+        name: target.name,
         fingerprint: contacts::fingerprint(&identity),
-        peer_id,
-        name: entry.peer_name,
-        delivered: entry.delivered,
-        sent_at_ms: entry.sent_at_ms,
     })
 }
 
@@ -211,18 +297,21 @@ pub async fn send_friend_request(
 /// requests, and return what the UI should show.
 #[tauri::command]
 pub async fn sync_friends(app: AppHandle, my_display: String) -> Result<FriendsSync, String> {
-    // 1. Retry the outbox (requests AND acceptances).
+    // 1. Retry the outbox (requests AND acceptances). Delivered requests that
+    // are still missing the peer's profile (delivered by an older build, or
+    // the profile fetch failed) get a backfill attempt the same way.
     let mut outbox = load_outbox(&app);
     let mut outbox_changed = false;
     for entry in &mut outbox {
-        if !entry.delivered {
-            if entry.my_display.is_empty() {
-                entry.my_display = my_display.clone();
-            }
-            if deliver(&app, entry).await.is_ok() {
-                entry.delivered = true;
-                outbox_changed = true;
-            }
+        if entry.delivered && (entry.peer_display.is_some() || entry.kind != "request") {
+            continue;
+        }
+        if entry.my_display.is_empty() {
+            entry.my_display = my_display.clone();
+        }
+        if deliver(&app, entry).await.is_ok() {
+            entry.delivered = true;
+            outbox_changed = true;
         }
     }
     // Delivered acceptances are one-shot; nothing further arrives for them.
@@ -288,13 +377,7 @@ pub async fn sync_friends(app: AppHandle, my_display: String) -> Result<FriendsS
     let pending = outbox
         .iter()
         .filter(|e| e.kind == "request")
-        .map(|e| PendingSentDto {
-            peer_id: e.peer_id.clone(),
-            name: e.peer_name.clone(),
-            fingerprint: hex_fingerprint(&e.peer_id),
-            delivered: e.delivered,
-            sent_at_ms: e.sent_at_ms,
-        })
+        .map(pending_dto)
         .collect();
     Ok(FriendsSync { incoming, pending })
 }
@@ -325,8 +408,10 @@ pub async fn respond_friend_request(
         my_display,
         sent_at_ms: now_ms(),
         delivered: false,
+        peer_username: None,
+        peer_display: None,
     };
-    entry.delivered = deliver(&app, &entry).await.is_ok();
+    entry.delivered = deliver(&app, &mut entry).await.is_ok();
 
     let mut outbox = load_outbox(&app);
     outbox.retain(|e| !(e.peer_id == entry.peer_id && e.kind == "accept"));
@@ -366,6 +451,19 @@ async fn delete_parked(app: &AppHandle, channel: &Channel, token: &str, id: &str
         let _ = FriendServiceClient::new(channel.clone())
             .delete_friend_request(req)
             .await;
+    }
+}
+
+/// Map an outbox entry to its UI shape.
+fn pending_dto(e: &OutboxEntry) -> PendingSentDto {
+    PendingSentDto {
+        peer_id: e.peer_id.clone(),
+        name: e.peer_name.clone(),
+        fingerprint: hex_fingerprint(&e.peer_id),
+        delivered: e.delivered,
+        sent_at_ms: e.sent_at_ms,
+        username: e.peer_username.clone(),
+        display_name: e.peer_display.clone(),
     }
 }
 

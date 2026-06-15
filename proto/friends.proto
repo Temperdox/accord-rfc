@@ -26,6 +26,12 @@ service FriendService {
   rpc ListFriendRequests(ListFriendRequestsRequest) returns (ListFriendRequestsResponse);
   // Remove a handled (accepted/declined) request addressed to the caller.
   rpc DeleteFriendRequest(DeleteFriendRequestRequest) returns (DeleteFriendRequestResponse);
+  // Live public profile of a user on this server. A requester calls this (as
+  // its guest session) right after a request delivers, so its pending entry
+  // shows the recipient's current account data instead of the snapshot baked
+  // into the fr code. Any authenticated session may call it - the only way to
+  // become a guest here is via this user's own shared code.
+  rpc GetPublicProfile(GetPublicProfileRequest) returns (GetPublicProfileResponse);
 }
 
 message SendFriendRequestRequest {
@@ -53,3 +59,13 @@ message DeleteFriendRequestRequest {
   string id = 1;
 }
 message DeleteFriendRequestResponse {}
+
+message GetPublicProfileRequest {
+  UserId user_id = 1;
+}
+// Future profile media (avatar, banner/pill images, ...) extend this message;
+// proto3 field addition keeps older clients compatible.
+message GetPublicProfileResponse {
+  string username = 1;
+  string display_name = 2;
+}

@@ -14,8 +14,8 @@ use std::time::Duration;
 use accord_proto::auth_service_client::AuthServiceClient;
 use accord_proto::friend_service_client::FriendServiceClient;
 use accord_proto::{
-    DeleteFriendRequestRequest, ListFriendRequestsRequest, LoginRequest, RegisterRequest,
-    SendFriendRequestRequest, UserId,
+    DeleteFriendRequestRequest, GetPublicProfileRequest, ListFriendRequestsRequest, LoginRequest,
+    RegisterRequest, SendFriendRequestRequest, UserId,
 };
 use accord_types::contact::ContactCode;
 use tokio::sync::oneshot;
@@ -182,6 +182,34 @@ async fn main() -> anyhow::Result<()> {
         ))
         .await?;
     println!("[ok] deletes are scoped to the recipient");
+
+    // 7. The public-profile fetch a requester does after delivery: live
+    // username + display name (instead of the snapshot in the code).
+    let profile = FriendServiceClient::new(ch.clone())
+        .get_public_profile(authed(
+            Request::new(GetPublicProfileRequest {
+                user_id: Some(UserId {
+                    value: bob_uid.clone(),
+                }),
+            }),
+            &alice_tok,
+        ))
+        .await?
+        .into_inner();
+    anyhow::ensure!(profile.username == "bob", "profile username");
+    anyhow::ensure!(profile.display_name == "bob", "profile display name");
+    let missing = FriendServiceClient::new(ch.clone())
+        .get_public_profile(authed(
+            Request::new(GetPublicProfileRequest {
+                user_id: Some(UserId {
+                    value: "00000000-0000-7000-8000-00000000dead".to_owned(),
+                }),
+            }),
+            &alice_tok,
+        ))
+        .await;
+    anyhow::ensure!(missing.is_err(), "unknown user must be NotFound");
+    println!("[ok] public profile fetch works (and 404s on unknown users)");
 
     let _ = shutdown_tx.send(());
     let _ = tokio::time::timeout(Duration::from_secs(5), server).await;

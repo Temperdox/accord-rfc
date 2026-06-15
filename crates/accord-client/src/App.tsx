@@ -308,6 +308,15 @@ function Home(props: { home: ServerSession }) {
   const [frIncoming, setFrIncoming] = createSignal<api.IncomingFriendRequest[]>([]);
   const [frPending, setFrPending] = createSignal<api.PendingSentRequest[]>([]);
   const [frNotice, setFrNotice] = createSignal<string | null>(null);
+  // Send-button lifecycle: idle -> sending -> a 1s "Sent" flash -> idle. While
+  // the pasted code's peer already has a pending request, the button grays out.
+  const [frSendState, setFrSendState] = createSignal<"idle" | "sending" | "sent">("idle");
+  // Who the pasted code identifies (decoded locally as the user types/pastes).
+  const [pasteId, setPasteId] = createSignal<string | null>(null);
+  const pastePending = () => {
+    const id = pasteId();
+    return !!id && frPending().some((p) => p.peerId === id);
+  };
   // contactId -> the opened DM (its backend session + group), once established.
   const [dmRoutes, setDmRoutes] = createSignal<Record<string, api.OpenedDm>>({});
   const [dmOpening, setDmOpening] = createSignal(false);
@@ -549,9 +558,11 @@ function Home(props: { home: ServerSession }) {
         syncFr();
       })
     );
-    // Keep the requests view fresh (and retry queued deliveries) while open.
+    // Keep the requests/friends views fresh (and retry queued deliveries +
+    // profile backfills) while either is open - pending placeholders show in
+    // the Friends list too.
     const frTimer = setInterval(() => {
-      if (dmSel() === "requests") syncFr();
+      if (dmSel() === "requests" || dmSel() === "friends") syncFr();
     }, 45_000);
     unlisteners.push(() => clearInterval(frTimer));
     unlisteners.push(
@@ -733,24 +744,58 @@ function Home(props: { home: ServerSession }) {
     }
   }
 
-  /** Send a friend request from a pasted fr code. */
+  // Decode the pasted code as it changes, so the button can reflect "this peer
+  // is already pending" before anything is sent.
+  createEffect(() => {
+    const code = codePaste().trim();
+    if (!code) {
+      setPasteId(null);
+      return;
+    }
+    api
+      .peekContactCode(code)
+      .then((p) => {
+        if (codePaste().trim() === code) setPasteId(p.peerId);
+      })
+      .catch(() => setPasteId(null));
+  });
+
+  /** Send a friend request from a pasted fr code. The code stays in the box:
+   * after the "Sent" flash the button grays out as long as it's still there. */
   async function sendFr() {
     const code = codePaste().trim();
-    if (!code) return;
+    if (!code || frSendState() !== "idle" || pastePending()) return;
     setError(null);
     setFrNotice(null);
+    setFrSendState("sending");
     try {
       const sent = await api.sendFriendRequest(code, props.home.username);
-      setCodePaste("");
+      setFrSendState("sent");
+      setTimeout(() => setFrSendState("idle"), 1000);
       setFrNotice(
         sent.delivered
-          ? `Request sent to ${sent.name}.`
+          ? `Request sent to ${sent.displayName ?? sent.name}.`
           : `Request saved - ${sent.name} isn't reachable right now, it will deliver automatically.`
       );
       await syncFr();
     } catch (e) {
+      setFrSendState("idle");
       setError(String(e));
     }
+  }
+
+  /** Re-attempt delivery of a pending request right now. */
+  async function resendFr(p: api.PendingSentRequest) {
+    setError(null);
+    setFrNotice(null);
+    try {
+      const sent = await api.resendFriendRequest(p.peerId, props.home.username);
+      setFrNotice(`Request re-sent to ${sent.displayName ?? sent.name}.`);
+    } catch (e) {
+      // "Still unreachable" is expected, not an error state.
+      setFrNotice(String(e));
+    }
+    await syncFr();
   }
 
   async function respondFr(r: api.IncomingFriendRequest, accept: boolean) {
@@ -844,10 +889,10 @@ function Home(props: { home: ServerSession }) {
       <Switch>
         <Match when={dmSel() === "friends"}>
           <div class="dm-body">
-            <For
-              each={contacts()}
-              fallback={<p class="empty-note">No friends yet. Add one from Friend Requests.</p>}
-            >
+            <Show when={contacts().length === 0 && frPending().length === 0}>
+              <p class="empty-note">No friends yet. Add one from Friend Requests.</p>
+            </Show>
+            <For each={contacts()}>
               {(c) => (
                 <div class="contact-row">
                   <div class="contact-meta">
@@ -868,6 +913,29 @@ function Home(props: { home: ServerSession }) {
                     </button>
                     <button class="btn-secondary btn-sm" onClick={() => toggleBlocked(c)}>
                       {isBlocked(c.id) ? "Unblock" : "Block"}
+                    </button>
+                  </div>
+                </div>
+              )}
+            </For>
+            {/* Outbound requests appear as placeholder friends until accepted;
+                their name/handle refresh from the peer's node once delivered. */}
+            <For each={frPending()}>
+              {(p) => (
+                <div class="contact-row pending-contact">
+                  <div class="contact-meta">
+                    <span class="contact-name">
+                      {p.displayName ?? p.name}
+                      <span class="blocked-badge"> pending</span>
+                    </span>
+                    <span class="contact-fp">
+                      {p.username ? `@${p.username} ` : ""}
+                      {p.fingerprint}
+                    </span>
+                  </div>
+                  <div class="contact-actions">
+                    <button class="btn-secondary btn-sm" onClick={() => setDmSel("requests")}>
+                      View request
                     </button>
                   </div>
                 </div>
@@ -902,8 +970,18 @@ function Home(props: { home: ServerSession }) {
                 rows={2}
               />
               <div class="actions">
-                <button class="btn-sm" onClick={sendFr}>
-                  Send request
+                <button
+                  class={pastePending() ? "btn-secondary btn-sm" : "btn-sm"}
+                  disabled={!codePaste().trim() || frSendState() !== "idle" || pastePending()}
+                  onClick={sendFr}
+                >
+                  {pastePending()
+                    ? "Request pending"
+                    : frSendState() === "sent"
+                      ? "Sent"
+                      : frSendState() === "sending"
+                        ? "Sending..."
+                        : "Send request"}
                 </button>
               </div>
               <Show when={frNotice()}>
@@ -948,7 +1026,7 @@ function Home(props: { home: ServerSession }) {
                 <div class="contact-row">
                   <div class="contact-meta">
                     <span class="contact-name">
-                      {p.name}
+                      {p.displayName ?? p.name}
                       <Show when={!p.delivered}>
                         <span class="blocked-badge"> not delivered yet</span>
                       </Show>
@@ -956,9 +1034,15 @@ function Home(props: { home: ServerSession }) {
                         <span class="verified-badge"> awaiting their reply</span>
                       </Show>
                     </span>
-                    <span class="contact-fp">{p.fingerprint}</span>
+                    <span class="contact-fp">
+                      {p.username ? `@${p.username} ` : ""}
+                      {p.fingerprint}
+                    </span>
                   </div>
                   <div class="contact-actions">
+                    <button class="btn-sm" onClick={() => resendFr(p)}>
+                      Resend
+                    </button>
                     <button class="btn-secondary btn-sm" onClick={() => cancelFr(p.peerId)}>
                       Cancel
                     </button>
@@ -1061,7 +1145,10 @@ function Home(props: { home: ServerSession }) {
                   <div class="sidebar-header">Direct Messages</div>
                   <button
                     class={`channel ${dmSel() === "friends" ? "active" : ""}`}
-                    onClick={() => setDmSel("friends")}
+                    onClick={() => {
+                      setDmSel("friends");
+                      syncFr(); // pending placeholders render here too
+                    }}
                   >
                     <span class="hash">
                       <Fa icon={faUserGroup} />

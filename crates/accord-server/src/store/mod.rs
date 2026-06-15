@@ -32,6 +32,29 @@ use model::{
 /// ever claim one at a time, so a small pool is plenty).
 pub const MAX_UNCONSUMED_KEY_PACKAGES: i64 = 30;
 
+/// Checksums of `sql` with its line endings swapped (LF and CRLF variants),
+/// computed exactly the way sqlx computes migration checksums (SHA-384 of the
+/// raw file bytes).
+///
+/// Why this exists: sqlx embeds the migration **files** at compile time and
+/// refuses to start if a previously-applied migration's checksum changed. Git
+/// line-ending conversion (`core.autocrlf`, which CI runners enable) changes
+/// the raw bytes without changing the SQL, so a database migrated by a binary
+/// built from a CRLF checkout looks "modified" to a binary built from an LF
+/// checkout of the *identical* migrations - and vice versa. Both store impls
+/// use this before running migrations to re-stamp checksums that differ from
+/// the embedded ones **only** by line endings; any real edit still fails
+/// loudly (migrations are immutable).
+pub(crate) fn line_ending_variant_checksums(sql: &str) -> [Vec<u8>; 2] {
+    use sha2::{Digest, Sha384};
+    let lf = sql.replace("\r\n", "\n");
+    let crlf = lf.replace('\n', "\r\n");
+    [
+        Sha384::digest(lf.as_bytes()).to_vec(),
+        Sha384::digest(crlf.as_bytes()).to_vec(),
+    ]
+}
+
 /// Backend-agnostic persistence interface. All methods are async and
 /// object-safe (via `async_trait`), so services hold `Arc<dyn Store>`.
 #[async_trait::async_trait]
@@ -49,6 +72,10 @@ pub trait Store: Send + Sync + std::fmt::Debug {
     async fn find_user_by_username(&self, username: &str) -> ServerResult<Option<UserRow>>;
     /// Whether the given user is a guest (open_dms DM-only account).
     async fn is_user_guest(&self, user_id: Uuid) -> ServerResult<bool>;
+    /// Public profile bits `(username, display_name)` of a user, if they exist.
+    /// Backs `FriendService::GetPublicProfile`; profile media columns (avatar,
+    /// banner) extend this when those ship.
+    async fn user_profile(&self, user_id: Uuid) -> ServerResult<Option<(String, String)>>;
     /// Whether any account already uses this public identity key.
     async fn identity_exists(&self, identity_pubkey: &[u8]) -> ServerResult<bool>;
     /// Total number of registered users (used to detect the first/owner signup).

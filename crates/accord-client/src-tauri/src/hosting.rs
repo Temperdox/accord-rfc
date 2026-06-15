@@ -27,6 +27,9 @@ pub const DEFAULT_HOST_PORT: u16 = 50051;
 pub struct LocalServer {
     shutdown: Option<oneshot::Sender<()>>,
     handle: Option<JoinHandle<()>>,
+    /// A `start` is in flight (the lock is NOT held across the slow startup,
+    /// so this flag is what makes concurrent starts safe).
+    starting: bool,
     /// The LAN URL other devices should connect to.
     addr: Option<String>,
     /// The shareable host (LAN IP) + port, for building invite keys.
@@ -91,11 +94,61 @@ pub async fn start(
     tls: bool,
 ) -> Result<String, String> {
     let state = app.state::<SharedLocalServer>();
-    let mut guard = state.lock().await;
-    if let Some(addr) = &guard.addr {
-        return Ok(addr.clone()); // already running
+    // Claim the start under a SHORT lock, then do the slow startup unlocked.
+    // Holding the lock through the up-to-10s listen wait stalled every other
+    // hosting call (and a factory reset) behind a failing start.
+    {
+        let mut guard = state.lock().await;
+        if let Some(addr) = &guard.addr {
+            return Ok(addr.clone()); // already running
+        }
+        if guard.starting {
+            return Err("the embedded server is already starting".to_owned());
+        }
+        guard.starting = true;
     }
 
+    let result = start_inner(app, port, require_invite, tls).await;
+
+    let mut guard = state.lock().await;
+    guard.starting = false;
+    let started = result?;
+    let addr = started.addr.clone();
+    guard.shutdown = Some(started.shutdown);
+    guard.handle = Some(started.handle);
+    guard.addr = Some(started.addr);
+    guard.host = Some(started.host);
+    guard.port = Some(port);
+    guard.private = require_invite;
+    guard.cert = started.cert;
+    drop(guard);
+    let _ = app.emit(
+        "dev-server",
+        DevServerStatus {
+            running: true,
+            addr: Some(addr.clone()),
+        },
+    );
+    Ok(addr)
+}
+
+/// What a successful [`start_inner`] hands back to `start` to store.
+struct StartedServer {
+    shutdown: oneshot::Sender<()>,
+    handle: JoinHandle<()>,
+    addr: String,
+    host: String,
+    cert: Option<String>,
+}
+
+/// The slow part of [`start`]: bind checks, config, spawn, wait-until-listening.
+/// Runs WITHOUT the `LocalServer` lock held (guarded by the `starting` flag).
+async fn start_inner(
+    app: &AppHandle,
+    port: u16,
+    require_invite: bool,
+    tls: bool,
+) -> Result<StartedServer, String> {
     // Bind the IPv6 wildcard; the server makes it dual-stack, so this one
     // listener serves LAN IPv4 *and* the Yggdrasil mesh IPv6 address.
     let bind: SocketAddr = format!("[::]:{port}")
@@ -148,16 +201,23 @@ pub async fn start(
     };
 
     let (tx, rx) = oneshot::channel();
+    let (err_tx, err_rx) = oneshot::channel::<String>();
     let handle = tauri::async_runtime::spawn(async move {
         if let Err(e) = accord_server::run_with_shutdown(config, rx).await {
-            eprintln!("[accord-client] embedded server stopped: {e}");
+            // tracing (not eprintln): this must land in the log file - a dying
+            // embedded server is the home node failing, not a dev curiosity.
+            tracing::error!("embedded server stopped: {e}");
+            let _ = err_tx.send(e.to_string());
         }
     });
 
     // The server binds its real listener only after it connects the DB and runs
     // migrations, so it isn't accepting connections the instant this returns.
     // Wait until it does, or the immediate `connect` would hit a transport error.
-    wait_until_listening(port).await?;
+    if let Err(e) = wait_until_listening(port, err_rx).await {
+        handle.abort();
+        return Err(e);
+    }
 
     let lan_ip = local_ip_address::local_ip()
         .map(|ip| ip.to_string())
@@ -165,29 +225,32 @@ pub async fn start(
     let scheme = if tls { "https" } else { "http" };
     let addr = format!("{scheme}://{lan_ip}:{port}");
 
-    guard.shutdown = Some(tx);
-    guard.handle = Some(handle);
-    guard.addr = Some(addr.clone());
-    guard.host = Some(lan_ip);
-    guard.port = Some(port);
-    guard.private = require_invite;
-    guard.cert = cert.map(|(c, _)| c);
-    let _ = app.emit(
-        "dev-server",
-        DevServerStatus {
-            running: true,
-            addr: Some(addr.clone()),
-        },
-    );
-    Ok(addr)
+    Ok(StartedServer {
+        shutdown: tx,
+        handle,
+        addr,
+        host: lan_ip,
+        cert: cert.map(|(c, _)| c),
+    })
 }
 
 /// Poll until the embedded server is accepting TCP connections on `port` (its
 /// listener is bound once migrations finish), or time out. Connect over IPv4
 /// loopback - the dual-stack `[::]` listener accepts it.
-async fn wait_until_listening(port: u16) -> Result<(), String> {
+///
+/// `err_rx` carries the server task's startup failure: when the server dies
+/// before listening (e.g. a migration error), this returns the REAL cause
+/// immediately instead of a generic timeout 10 seconds later.
+async fn wait_until_listening(port: u16, mut err_rx: oneshot::Receiver<String>) -> Result<(), String> {
     let addr = SocketAddr::from((Ipv4Addr::LOCALHOST, port));
     for _ in 0..200 {
+        match err_rx.try_recv() {
+            Ok(e) => return Err(format!("embedded server failed to start: {e}")),
+            Err(oneshot::error::TryRecvError::Closed) => {
+                return Err("embedded server exited during startup".to_owned());
+            }
+            Err(oneshot::error::TryRecvError::Empty) => {}
+        }
         if tokio::net::TcpStream::connect(addr).await.is_ok() {
             return Ok(());
         }

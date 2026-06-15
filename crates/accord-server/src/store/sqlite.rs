@@ -76,10 +76,56 @@ impl SqliteStore {
     /// # Errors
     /// Returns [`ServerError::Migration`] if a migration fails.
     pub async fn migrate(&self) -> ServerResult<()> {
+        self.repair_line_ending_checksums().await?;
         MIGRATOR
             .run(&self.pool)
             .await
             .map_err(|e| ServerError::Migration(e.to_string()))?;
+        Ok(())
+    }
+
+    /// Re-stamp applied-migration checksums that differ from the embedded ones
+    /// **only by line endings** (see [`super::line_ending_variant_checksums`]).
+    ///
+    /// Without this, a database created by a CI-built binary (CRLF checkout)
+    /// rejects a locally-built binary (LF checkout) with "migration N was
+    /// previously applied but has been modified" even though the SQL is
+    /// identical - which killed the embedded home node at startup. Genuinely
+    /// edited migrations still fail validation.
+    async fn repair_line_ending_checksums(&self) -> ServerResult<()> {
+        let table: Option<String> = sqlx::query_scalar(
+            "SELECT name FROM sqlite_master WHERE type = 'table' AND name = '_sqlx_migrations'",
+        )
+        .fetch_optional(&self.pool)
+        .await?;
+        if table.is_none() {
+            return Ok(()); // fresh database, nothing applied yet
+        }
+        for m in MIGRATOR.iter() {
+            let stored: Option<Vec<u8>> =
+                sqlx::query_scalar("SELECT checksum FROM _sqlx_migrations WHERE version = ?")
+                    .bind(m.version)
+                    .fetch_optional(&self.pool)
+                    .await?;
+            let Some(stored) = stored else { continue };
+            if stored.as_slice() == m.checksum.as_ref() {
+                continue;
+            }
+            let equivalent = super::line_ending_variant_checksums(&m.sql)
+                .iter()
+                .any(|v| v.as_slice() == stored.as_slice());
+            if equivalent {
+                sqlx::query("UPDATE _sqlx_migrations SET checksum = ? WHERE version = ?")
+                    .bind(m.checksum.as_ref())
+                    .bind(m.version)
+                    .execute(&self.pool)
+                    .await?;
+                tracing::warn!(
+                    version = m.version,
+                    "re-stamped migration checksum (line-ending difference only)"
+                );
+            }
+        }
         Ok(())
     }
 }
@@ -153,6 +199,15 @@ impl Store for SqliteStore {
             .fetch_optional(&self.pool)
             .await?;
         Ok(row.is_some_and(|(g,)| g != 0))
+    }
+
+    async fn user_profile(&self, user_id: Uuid) -> ServerResult<Option<(String, String)>> {
+        let row: Option<(String, String)> =
+            sqlx::query_as("SELECT username, display_name FROM users WHERE id = ?")
+                .bind(user_id.to_string())
+                .fetch_optional(&self.pool)
+                .await?;
+        Ok(row)
     }
 
     async fn count_users(&self) -> ServerResult<i64> {
@@ -971,5 +1026,81 @@ impl Store for SqliteStore {
                 .fetch_one(&self.pool)
                 .await?;
         Ok(count)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A fresh on-disk store in a temp file (`:memory:` would give each pool
+    /// connection its own empty database).
+    async fn temp_store() -> (SqliteStore, std::path::PathBuf) {
+        let path = std::env::temp_dir().join(format!("accord-test-{}.db", Uuid::now_v7()));
+        let url = format!("sqlite:{}", path.to_string_lossy().replace('\\', "/"));
+        let store = SqliteStore::connect(&url).await.expect("connect");
+        (store, path)
+    }
+
+    /// A checksum that differs from the embedded one only by line endings must
+    /// be repaired in place, so `migrate()` succeeds where stock sqlx fails
+    /// with "previously applied but has been modified".
+    #[tokio::test]
+    async fn migrate_self_heals_line_ending_checksums() {
+        let (store, path) = temp_store().await;
+        store.migrate().await.expect("initial migrate");
+
+        // Re-stamp the first migration as if it had been applied by a binary
+        // built from a checkout with the opposite line endings.
+        let first = MIGRATOR.iter().next().expect("at least one migration");
+        let variants = crate::store::line_ending_variant_checksums(&first.sql);
+        let other = variants
+            .iter()
+            .find(|v| v.as_slice() != first.checksum.as_ref())
+            .expect("sql contains newlines, so the variants differ");
+        sqlx::query("UPDATE _sqlx_migrations SET checksum = ? WHERE version = ?")
+            .bind(other.as_slice())
+            .bind(first.version)
+            .execute(&store.pool)
+            .await
+            .expect("stamp variant checksum");
+
+        store.migrate().await.expect("self-healing migrate");
+
+        let stored: Vec<u8> =
+            sqlx::query_scalar("SELECT checksum FROM _sqlx_migrations WHERE version = ?")
+                .bind(first.version)
+                .fetch_one(&store.pool)
+                .await
+                .expect("read checksum");
+        assert_eq!(stored.as_slice(), first.checksum.as_ref());
+
+        drop(store);
+        let _ = std::fs::remove_file(path);
+    }
+
+    /// A genuinely different checksum (a real edit) must still fail loudly -
+    /// migrations are immutable.
+    #[tokio::test]
+    async fn migrate_still_rejects_real_modifications() {
+        let (store, path) = temp_store().await;
+        store.migrate().await.expect("initial migrate");
+
+        let first = MIGRATOR.iter().next().expect("at least one migration");
+        sqlx::query("UPDATE _sqlx_migrations SET checksum = ? WHERE version = ?")
+            .bind(vec![0u8; 48])
+            .bind(first.version)
+            .execute(&store.pool)
+            .await
+            .expect("stamp bogus checksum");
+
+        let err = store.migrate().await.expect_err("must reject");
+        assert!(
+            err.to_string().contains("modified"),
+            "unexpected error: {err}"
+        );
+
+        drop(store);
+        let _ = std::fs::remove_file(path);
     }
 }

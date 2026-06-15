@@ -36,10 +36,53 @@ impl PostgresStore {
     /// # Errors
     /// Returns [`ServerError`] if a migration fails.
     pub async fn migrate(&self) -> ServerResult<()> {
+        self.repair_line_ending_checksums().await?;
         MIGRATOR
             .run(&self.pool)
             .await
             .map_err(|e| ServerError::Migration(e.to_string()))?;
+        Ok(())
+    }
+
+    /// Re-stamp applied-migration checksums that differ from the embedded ones
+    /// **only by line endings** (see [`super::line_ending_variant_checksums`]).
+    /// Mirrors [`super::sqlite::SqliteStore::migrate`]'s repair; genuinely
+    /// edited migrations still fail validation (migrations are immutable).
+    async fn repair_line_ending_checksums(&self) -> ServerResult<()> {
+        let exists: bool = sqlx::query_scalar(
+            "SELECT EXISTS (SELECT 1 FROM information_schema.tables \
+             WHERE table_name = '_sqlx_migrations')",
+        )
+        .fetch_one(&self.pool)
+        .await?;
+        if !exists {
+            return Ok(()); // fresh database, nothing applied yet
+        }
+        for m in MIGRATOR.iter() {
+            let stored: Option<Vec<u8>> =
+                sqlx::query_scalar("SELECT checksum FROM _sqlx_migrations WHERE version = $1")
+                    .bind(m.version)
+                    .fetch_optional(&self.pool)
+                    .await?;
+            let Some(stored) = stored else { continue };
+            if stored.as_slice() == m.checksum.as_ref() {
+                continue;
+            }
+            let equivalent = super::line_ending_variant_checksums(&m.sql)
+                .iter()
+                .any(|v| v.as_slice() == stored.as_slice());
+            if equivalent {
+                sqlx::query("UPDATE _sqlx_migrations SET checksum = $1 WHERE version = $2")
+                    .bind(m.checksum.as_ref())
+                    .bind(m.version)
+                    .execute(&self.pool)
+                    .await?;
+                tracing::warn!(
+                    version = m.version,
+                    "re-stamped migration checksum (line-ending difference only)"
+                );
+            }
+        }
         Ok(())
     }
 }
@@ -103,6 +146,15 @@ impl Store for PostgresStore {
             .fetch_optional(&self.pool)
             .await?;
         Ok(row.is_some_and(|(g,)| g))
+    }
+
+    async fn user_profile(&self, user_id: Uuid) -> ServerResult<Option<(String, String)>> {
+        let row: Option<(String, String)> =
+            sqlx::query_as("SELECT username, display_name FROM users WHERE id = $1")
+                .bind(user_id)
+                .fetch_optional(&self.pool)
+                .await?;
+        Ok(row)
     }
 
     async fn count_users(&self) -> ServerResult<i64> {

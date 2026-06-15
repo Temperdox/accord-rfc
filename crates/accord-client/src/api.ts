@@ -127,10 +127,22 @@ export interface IncomingFriendRequest {
 /** A friend request I sent, awaiting (or retrying) delivery / acceptance. */
 export interface PendingSentRequest {
   peerId: string;
+  /** Name from the pasted code (placeholder until the profile fetch). */
   name: string;
   fingerprint: string;
   delivered: boolean;
   sentAtMs: number;
+  /** Live account data fetched from their home node after delivery
+   * (avatar/banner join these when profile media ships). */
+  username?: string | null;
+  displayName?: string | null;
+}
+
+/** What a pasted fr code identifies (decoded locally, nothing sent). */
+export interface CodePeek {
+  peerId: string;
+  name: string;
+  fingerprint: string;
 }
 
 /** Friend-request sync result: what the Friend Requests view shows. */
@@ -161,6 +173,16 @@ export const respondFriendRequest = (
 /** Withdraw a pending sent request (local; their parked copy can't be recalled). */
 export const cancelFriendRequest = (peerId: string): Promise<void> =>
   invoke("cancel_friend_request", { peerId });
+
+/** Re-attempt delivery of a pending request right now (their node dedupes). */
+export const resendFriendRequest = (
+  peerId: string,
+  myDisplay: string
+): Promise<PendingSentRequest> => invoke("resend_friend_request", { peerId, myDisplay });
+
+/** Decode a pasted fr code locally (drives the send-button pending state). */
+export const peekContactCode = (code: string): Promise<CodePeek> =>
+  invoke("peek_contact_code", { code });
 
 /** Fired when the friends list changes (request accepted either direction). */
 export const onFriendsChanged = (handler: () => void): Promise<UnlistenFn> =>

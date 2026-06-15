@@ -95,6 +95,8 @@ fn register_handlers(builder: tauri::Builder<tauri::Wry>) -> tauri::Builder<taur
             commands::friends::sync_friends,
             commands::friends::respond_friend_request,
             commands::friends::cancel_friend_request,
+            commands::friends::resend_friend_request,
+            commands::friends::peek_contact_code,
             commands::blocks::block_contact,
             commands::blocks::unblock_contact,
             commands::blocks::list_blocks,
@@ -145,6 +147,8 @@ fn register_handlers(builder: tauri::Builder<tauri::Wry>) -> tauri::Builder<taur
             commands::friends::sync_friends,
             commands::friends::respond_friend_request,
             commands::friends::cancel_friend_request,
+            commands::friends::resend_friend_request,
+            commands::friends::peek_contact_code,
             commands::blocks::block_contact,
             commands::blocks::unblock_contact,
             commands::blocks::list_blocks,
@@ -239,7 +243,8 @@ fn install_dev_menu(app: &tauri::App) -> tauri::Result<()> {
             "dev_factory_reset" => spawn(async move {
                 // Restarts the app on success, so an Err is the only way back.
                 if let Err(e) = factory::factory_reset(&app).await {
-                    eprintln!("[dev] factory reset failed: {e}");
+                    // tracing, not eprintln: must reach the log file.
+                    tracing::error!("factory reset failed: {e}");
                 }
             }),
             _ => {}

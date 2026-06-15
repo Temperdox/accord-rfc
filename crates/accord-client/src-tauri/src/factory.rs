@@ -25,22 +25,38 @@ use tauri::{AppHandle, Manager};
 pub async fn factory_reset(app: &AppHandle) -> Result<(), String> {
     tracing::warn!("FACTORY RESET requested - wiping all local state");
 
+    // Every preparatory phase runs under a timeout: a reset must never deadlock
+    // behind a stuck login or hosting call (it is the recovery tool for exactly
+    // those states). A skipped phase only risks a locked file, which the wipe
+    // loop below already retries.
+    const PHASE: Duration = Duration::from_secs(5);
+
     // Release file handles: the mesh holds mesh.key only at startup, but the
     // embedded server holds the SQLite database open.
-    let _ = crate::mesh::stop(app).await;
-    let _ = crate::hosting::stop(app).await;
+    if tokio::time::timeout(PHASE, crate::mesh::stop(app)).await.is_err() {
+        tracing::warn!("mesh stop timed out; continuing reset");
+    }
+    if tokio::time::timeout(PHASE, crate::hosting::stop(app)).await.is_err() {
+        tracing::warn!("embedded server stop timed out; continuing reset");
+    }
 
     // Abort session supervisors so nothing reconnects mid-wipe.
     {
         let state = app.state::<crate::state::SharedSessions>();
-        let mut sessions = state.lock().await;
-        for session in sessions.map.values_mut() {
-            for handle in session.session_tasks.drain(..) {
-                handle.abort();
+        match tokio::time::timeout(PHASE, state.lock()).await {
+            Ok(mut sessions) => {
+                for session in sessions.map.values_mut() {
+                    for handle in session.session_tasks.drain(..) {
+                        handle.abort();
+                    }
+                }
+                sessions.map.clear();
+                sessions.active = None;
+            }
+            Err(_) => {
+                tracing::warn!("session state busy; skipping supervisor abort");
             }
         }
-        sessions.map.clear();
-        sessions.active = None;
     }
 
     let dir = app

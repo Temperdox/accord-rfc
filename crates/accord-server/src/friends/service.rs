@@ -12,8 +12,8 @@ use std::sync::Arc;
 use accord_proto::friend_service_server::FriendService;
 use accord_proto::{
     DeleteFriendRequestRequest, DeleteFriendRequestResponse, FriendRequestEntry,
-    ListFriendRequestsRequest, ListFriendRequestsResponse, SendFriendRequestRequest,
-    SendFriendRequestResponse,
+    GetPublicProfileRequest, GetPublicProfileResponse, ListFriendRequestsRequest,
+    ListFriendRequestsResponse, SendFriendRequestRequest, SendFriendRequestResponse,
 };
 use accord_types::contact::ContactCode;
 use tonic::{Request, Response, Status};
@@ -128,5 +128,30 @@ impl FriendService for FriendSvc {
         let req = request.into_inner();
         self.store.delete_friend_request(user_id, &req.id).await?;
         Ok(Response::new(DeleteFriendRequestResponse {}))
+    }
+
+    async fn get_public_profile(
+        &self,
+        request: Request<GetPublicProfileRequest>,
+    ) -> Result<Response<GetPublicProfileResponse>, Status> {
+        // Authentication only - guests included. Being a guest here means the
+        // profile owner shared their code; the data returned is what they
+        // already put in it (kept live instead of frozen at code-gen time).
+        let _caller = self.caller(&request)?;
+        let req = request.into_inner();
+        let user_id = req
+            .user_id
+            .as_ref()
+            .and_then(|u| Uuid::parse_str(&u.value).ok())
+            .ok_or_else(|| ServerError::InvalidArgument("user id required".into()))?;
+        let (username, display_name) = self
+            .store
+            .user_profile(user_id)
+            .await?
+            .ok_or_else(|| ServerError::NotFound("no such user".to_owned()))?;
+        Ok(Response::new(GetPublicProfileResponse {
+            username,
+            display_name,
+        }))
     }
 }

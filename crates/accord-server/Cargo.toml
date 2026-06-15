@@ -40,6 +40,9 @@ serde.workspace = true
 serde_json.workspace = true
 uuid.workspace = true
 chrono.workspace = true
+# Migration checksum repair only (store/mod.rs): the same hasher sqlx itself
+# uses for migration checksums (sqlx already pulls sha2 in transitively).
+sha2 = "0.10"
 
 # Observability + errors
 tracing.workspace = true

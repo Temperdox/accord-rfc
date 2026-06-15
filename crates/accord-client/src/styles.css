@@ -720,6 +720,10 @@ button.link:hover:not(:disabled) {
   background: #1d1f27;
   border-radius: 8px;
 }
+/* Outbound friend request shown as a placeholder friend until accepted. */
+.pending-contact {
+  opacity: 0.65;
+}
 .contact-meta {
   display: flex;
   flex-direction: column;
