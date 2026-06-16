@@ -174,7 +174,10 @@ async fn resolve_peers(
                 "connecting",
                 "Finding the best public peers for your region...",
             );
-            crate::peers::select_public_peers().await
+            // Cache the selection in the app-data dir so a later repo-down run
+            // can bootstrap from known-good peers instead of a stale seed.
+            let cache_dir = app.path().app_data_dir().ok();
+            crate::peers::select_public_peers(cache_dir.as_deref()).await
         }
     }
 }
@@ -572,7 +575,9 @@ mod imp {
     }
 
     /// Bootstrap peers for internet reachability, from `ACCORD_MESH_PEERS`
-    /// (comma-separated) or `mesh-peers.txt` (one per line) in the app-data dir.
+    /// (comma-separated) or `mesh-peers.txt` (one per line) in the app-data dir,
+    /// then the last successful public-peer selection cached by the Settings
+    /// "Public" connect flow, then the compiled-in seed.
     /// Empty is fine on a LAN - multicast discovery finds local peers.
     fn load_peers(app: &AppHandle) -> Vec<String> {
         if let Ok(env) = std::env::var("ACCORD_MESH_PEERS") {
@@ -596,9 +601,16 @@ mod imp {
                     return from_file;
                 }
             }
+            // Reuse the last known-good public selection (kept fresh by the
+            // Settings "Public" connect flow) before the compiled-in seed, so
+            // config-free hosting also bootstraps from recently-reachable peers.
+            let cached = crate::peers::read_cached_peers(Some(&dir));
+            if !cached.is_empty() {
+                return cached;
+            }
         }
-        // Nothing configured -> fall back to the bundled public peers so internet
-        // hosting works out of the box.
+        // Nothing configured or cached -> fall back to the bundled public peers
+        // so internet hosting works out of the box.
         super::default_peers()
     }
 }

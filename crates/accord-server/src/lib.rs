@@ -17,6 +17,7 @@ pub mod config;
 pub mod error;
 pub mod friends;
 pub mod groups;
+pub mod guardrails;
 pub mod messaging;
 pub mod mls_relay;
 pub mod roles;
@@ -93,6 +94,11 @@ async fn run_inner(config: Config, shutdown: Option<oneshot::Receiver<()>>) -> a
             .await?;
     }
 
+    // Ensure the singleton tavern-identity row exists (one server = one tavern).
+    if let Ok(tavern_id) = uuid::Uuid::parse_str(groups::TAVERN_ID) {
+        store.ensure_tavern(tavern_id).await?;
+    }
+
     // Message bus: Redis (cross-instance) when configured, else in-process.
     let redis_url = (!config.redis_url.is_empty()).then_some(config.redis_url.as_str());
     let hub = Hub::new(redis_url).await?;
@@ -100,14 +106,22 @@ async fn run_inner(config: Config, shutdown: Option<oneshot::Receiver<()>>) -> a
 
     let jwt = JwtKeys::new(&config.jwt_secret, config.access_token_ttl_secs);
 
+    // Guardrail/auto-mod engine: rate-limits + flags privileged actions (even for
+    // admins), shared across services. Owner is alerted but not blocked by default.
+    let guardrails = std::sync::Arc::new(crate::guardrails::Guardrails::default());
+
     let auth_service = AuthServiceServer::new(AuthSvc::new(
         store.clone(),
         jwt.clone(),
         config.require_invite,
         config.open_dms,
     ));
-    let group_service =
-        GroupServiceServer::new(GroupSvc::new(store.clone(), jwt.clone(), hub.clone()));
+    let group_service = GroupServiceServer::new(GroupSvc::new(
+        store.clone(),
+        jwt.clone(),
+        hub.clone(),
+        guardrails.clone(),
+    ));
     let messaging_service =
         MessagingServiceServer::new(MessagingSvc::new(store.clone(), jwt.clone(), hub.clone()));
     let mls_service =

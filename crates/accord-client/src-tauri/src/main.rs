@@ -29,6 +29,9 @@ mod peers;
 mod settings;
 mod state;
 mod sync;
+mod taverns;
+#[cfg(test)]
+mod taverns_it;
 mod vault;
 
 use state::Sessions;
@@ -40,6 +43,7 @@ fn main() {
         .manage(Mutex::new(sync::Sync::default()))
         .manage(std::sync::Mutex::new(settings::Settings::default()))
         .manage(Mutex::new(hosting::LocalServer::default()))
+        .manage(Mutex::new(taverns::HostedTaverns::default()))
         .manage(Mutex::new(mesh::MeshState::default()))
         .setup(|app| {
             // Start verbose logging; keep the writer guard alive for the process.
@@ -65,9 +69,16 @@ fn main() {
             Ok(())
         });
 
-    register_handlers(builder)
-        .run(tauri::generate_context!())
-        .expect("error while running the Accord client");
+    let app = register_handlers(builder)
+        .build(tauri::generate_context!())
+        .expect("error while building the Accord client");
+    app.run(|app_handle, event| {
+        // Gracefully stop any hosted taverns when the app exits so their SQLite
+        // DBs flush cleanly (the home node is torn down with the process).
+        if let tauri::RunEvent::Exit = event {
+            tauri::async_runtime::block_on(taverns::stop_all(app_handle));
+        }
+    });
 }
 
 /// Register IPC commands. Dev-only commands are compiled in exclusively for debug
@@ -85,6 +96,20 @@ fn register_handlers(builder: tauri::Builder<tauri::Wry>) -> tauri::Builder<taur
             commands::messaging::fetch_public_history,
             commands::messaging::fetch_private_history,
             commands::messaging::set_active_server,
+            commands::messaging::create_channel,
+            commands::messaging::delete_channel,
+            commands::messaging::list_members,
+            commands::messaging::get_my_permissions,
+            commands::messaging::get_tavern,
+            commands::messaging::update_tavern,
+            commands::messaging::kick_member,
+            commands::messaging::ban_member,
+            commands::messaging::unban_member,
+            commands::messaging::list_bans,
+            commands::voice::join_voice,
+            commands::voice::leave_voice,
+            commands::voice::set_voice_state,
+            commands::voice::send_voice_signal,
             commands::accounts::list_accounts,
             commands::contacts::my_contact_code,
             commands::contacts::add_contact,
@@ -104,6 +129,7 @@ fn register_handlers(builder: tauri::Builder<tauri::Wry>) -> tauri::Builder<taur
             settings::set_encrypt_at_rest,
             settings::set_friend_request_policy,
             settings::set_rendezvous_node,
+            settings::set_max_hosted_taverns,
             mesh::get_mesh_status,
             mesh::set_mesh_enabled,
             mesh::mesh_connect,
@@ -116,6 +142,8 @@ fn register_handlers(builder: tauri::Builder<tauri::Wry>) -> tauri::Builder<taur
             commands::server::create_invite_key,
             commands::server::decode_invite,
             commands::server::prepare_mesh,
+            taverns::create_tavern,
+            taverns::resume_hosted_taverns,
             hosting::is_dev_build,
             hosting::dev_start_local_server,
             hosting::dev_stop_local_server,
@@ -137,6 +165,20 @@ fn register_handlers(builder: tauri::Builder<tauri::Wry>) -> tauri::Builder<taur
             commands::messaging::fetch_public_history,
             commands::messaging::fetch_private_history,
             commands::messaging::set_active_server,
+            commands::messaging::create_channel,
+            commands::messaging::delete_channel,
+            commands::messaging::list_members,
+            commands::messaging::get_my_permissions,
+            commands::messaging::get_tavern,
+            commands::messaging::update_tavern,
+            commands::messaging::kick_member,
+            commands::messaging::ban_member,
+            commands::messaging::unban_member,
+            commands::messaging::list_bans,
+            commands::voice::join_voice,
+            commands::voice::leave_voice,
+            commands::voice::set_voice_state,
+            commands::voice::send_voice_signal,
             commands::accounts::list_accounts,
             commands::contacts::my_contact_code,
             commands::contacts::add_contact,
@@ -156,6 +198,7 @@ fn register_handlers(builder: tauri::Builder<tauri::Wry>) -> tauri::Builder<taur
             settings::set_encrypt_at_rest,
             settings::set_friend_request_policy,
             settings::set_rendezvous_node,
+            settings::set_max_hosted_taverns,
             mesh::get_mesh_status,
             mesh::set_mesh_enabled,
             mesh::mesh_connect,
@@ -168,6 +211,8 @@ fn register_handlers(builder: tauri::Builder<tauri::Wry>) -> tauri::Builder<taur
             commands::server::create_invite_key,
             commands::server::decode_invite,
             commands::server::prepare_mesh,
+            taverns::create_tavern,
+            taverns::resume_hosted_taverns,
             hosting::is_dev_build,
         ])
     }

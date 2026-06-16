@@ -825,3 +825,328 @@ button.link:hover:not(:disabled) {
   flex: 0 0 auto;
   width: 90px;
 }
+
+/* ---- Taverns: channels, voice, members, mod alerts --------------------- */
+
+.sidebar-header-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+.channel-add-btn {
+  background: transparent;
+  border: none;
+  color: var(--text-dim);
+  cursor: pointer;
+  padding: 2px 6px;
+  border-radius: var(--radius-sm);
+  width: auto;
+}
+.channel-add-btn:hover {
+  color: var(--text);
+  background: var(--bg-alt);
+}
+
+/* A channel row with a hover delete affordance. */
+.channel-row {
+  display: flex;
+  align-items: center;
+  border-radius: var(--radius-sm);
+}
+.channel-row .channel {
+  flex: 1;
+  min-width: 0;
+}
+.channel-row.active {
+  background: var(--bg-alt);
+}
+.channel-del {
+  flex: 0 0 auto;
+  background: transparent;
+  border: none;
+  color: var(--text-dim);
+  cursor: pointer;
+  width: 28px;
+  opacity: 0;
+  padding: 4px;
+}
+.channel-row:hover .channel-del {
+  opacity: 1;
+}
+.channel-del:hover {
+  color: var(--danger);
+}
+.voice-channel .hash {
+  color: var(--text-dim);
+}
+
+/* Voice participant tiles nested under a voice channel. */
+.voice-participant {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 2px 8px 2px 30px;
+  font-size: var(--fs-sm);
+  color: var(--text-dim);
+}
+.vp-icons {
+  display: inline-flex;
+  gap: 6px;
+  color: var(--text-dim);
+}
+
+/* The persistent voice control bar (when connected to a voice channel). */
+.voice-bar {
+  margin: var(--space-2) 0;
+  padding: var(--space-2);
+  background: var(--bg-alt);
+  border-radius: var(--radius-md);
+}
+.voice-bar-label {
+  display: block;
+  font-size: var(--fs-sm);
+  color: var(--ok);
+  margin-bottom: var(--space-2);
+}
+.voice-toggles {
+  display: flex;
+  gap: var(--space-2);
+}
+.voice-toggle {
+  flex: 1;
+  background: var(--bg-input);
+  border: 1px solid var(--border);
+  color: var(--text);
+  border-radius: var(--radius-sm);
+  padding: 6px;
+  cursor: pointer;
+}
+.voice-toggle.on {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+.voice-toggle.off {
+  color: var(--text-dim);
+}
+.voice-toggle.danger:hover {
+  border-color: var(--danger);
+  color: var(--danger);
+}
+
+/* Right-hand member list. */
+.members-panel {
+  flex: 0 0 220px;
+  background: var(--bg-alt);
+  border-left: 1px solid var(--border);
+  overflow-y: auto;
+  padding: var(--space-2);
+}
+.member-row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: 4px 6px;
+  border-radius: var(--radius-sm);
+}
+.member-row:hover {
+  background: var(--bg);
+}
+.member-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--text-dim);
+  flex: 0 0 auto;
+}
+.member-dot.online {
+  background: var(--ok);
+}
+.member-avatar {
+  width: 24px;
+  height: 24px;
+  border-radius: 50%;
+  background: var(--accent-dim);
+  color: #fff;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: var(--fs-xs);
+  flex: 0 0 auto;
+}
+.member-name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: var(--fs-md);
+}
+.role-badge {
+  font-size: var(--fs-xs);
+  padding: 1px 6px;
+  border-radius: var(--radius-pill);
+  background: var(--bg-input);
+  color: var(--text-dim);
+}
+.role-badge.owner {
+  color: var(--warn);
+}
+.member-actions {
+  display: none;
+  gap: 4px;
+}
+.member-row:hover .member-actions {
+  display: inline-flex;
+}
+.member-action {
+  background: transparent;
+  border: 1px solid var(--border);
+  color: var(--text-dim);
+  border-radius: var(--radius-sm);
+  font-size: var(--fs-xs);
+  padding: 1px 6px;
+  cursor: pointer;
+  width: auto;
+}
+.member-action.danger:hover {
+  color: var(--danger);
+  border-color: var(--danger);
+}
+
+.header-icon-btn {
+  background: transparent;
+  border: none;
+  color: var(--text-dim);
+  cursor: pointer;
+  padding: 4px 8px;
+  border-radius: var(--radius-sm);
+  width: auto;
+}
+.header-icon-btn:hover,
+.header-icon-btn.active {
+  color: var(--text);
+  background: var(--bg-alt);
+}
+
+.channel-kind-pick {
+  display: flex;
+  gap: var(--space-2);
+}
+.channel-kind-pick .btn-secondary.active {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+/* Moderation alert toasts (owner/admins). */
+.mod-alert-stack {
+  position: fixed;
+  bottom: var(--space-4);
+  right: var(--space-4);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  max-width: 360px;
+  z-index: 50;
+}
+.mod-alert-toast {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-2) var(--space-3);
+  border-radius: var(--radius-md);
+  background: var(--bg-alt);
+  border-left: 3px solid var(--warn);
+  font-size: var(--fs-sm);
+}
+.mod-alert-toast.hostile {
+  border-left-color: var(--danger);
+}
+.mod-alert-toast.info {
+  border-left-color: var(--accent);
+}
+.mod-alert-clear {
+  align-self: flex-end;
+  background: transparent;
+  border: none;
+  color: var(--text-dim);
+  cursor: pointer;
+  font-size: var(--fs-xs);
+  width: auto;
+}
+
+/* Sandboxed embedded content (presets / future screen-share surface). */
+.sandboxed-frame {
+  width: 100%;
+  height: 100%;
+  border: none;
+  background: #000;
+}
+
+/* Create/Join choice cards (rounded rectangles — room for future decals + anim). */
+.choice-cards {
+  display: flex;
+  gap: var(--space-3);
+  margin: var(--space-3) 0;
+}
+.choice-card {
+  position: relative;
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: var(--space-1);
+  padding: var(--space-4);
+  min-height: 110px;
+  background: var(--bg-input);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  color: var(--text);
+  cursor: pointer;
+  text-align: left;
+  overflow: hidden;
+  /* Decal/animation hook: transforms + shadow transition ready for later art. */
+  transition: transform 0.12s ease, border-color 0.12s ease, box-shadow 0.12s ease;
+}
+.choice-card:hover:not(.disabled) {
+  transform: translateY(-2px);
+  border-color: var(--accent);
+  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.35);
+}
+.choice-card.active {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 1px var(--accent) inset;
+}
+.choice-card.disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+.choice-card-icon {
+  font-size: 20px;
+  color: var(--accent);
+  margin-bottom: var(--space-1);
+}
+.choice-card-title {
+  font-size: var(--fs-lg);
+  font-weight: 600;
+}
+.choice-card-sub {
+  font-size: var(--fs-sm);
+  color: var(--text-dim);
+}
+.choice-card-badge {
+  position: absolute;
+  top: var(--space-2);
+  right: var(--space-2);
+  font-size: var(--fs-xs);
+  padding: 1px 7px;
+  border-radius: var(--radius-pill);
+  background: var(--warn);
+  color: #1a1b21;
+}
+
+/* A grouped sub-block within a settings tab (e.g. Hosting under Network). */
+.settings-subsection {
+  margin-top: var(--space-5);
+  padding-top: var(--space-3);
+  border-top: 1px solid var(--border);
+}

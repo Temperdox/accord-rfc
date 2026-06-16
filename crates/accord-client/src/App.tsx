@@ -24,14 +24,26 @@ import {
 import Fa from "solid-fa";
 import {
   faComments,
+  faDesktop,
   faGear,
+  faGlobe,
   faHashtag,
+  faLock,
+  faMicrophone,
+  faMicrophoneSlash,
+  faPhoneSlash,
   faPlus,
+  faRightToBracket,
+  faTrash,
+  faTriangleExclamation,
   faUserGroup,
+  faVideo,
+  faVolumeHigh,
   faUserPlus,
 } from "@fortawesome/free-solid-svg-icons";
 import * as api from "./api";
 import type { GroupDto } from "./api";
+import * as voice from "./voice";
 
 /** A server the user is signed in to (their home, or one they joined). */
 interface ServerSession {
@@ -272,7 +284,7 @@ function AuthScreen(props: { onAuthed: (s: ServerSession) => void }) {
 
         <p class="hint auth-foot">
           Your account lives on your own device-hosted home server. After signing in
-          you can join other servers from the rail.
+          you can create or join other taverns from the rail.
         </p>
       </div>
     </div>
@@ -348,17 +360,119 @@ function Home(props: { home: ServerSession }) {
   const [rdvUrl, setRdvUrl] = createSignal("");
   const [rdvLabel, setRdvLabel] = createSignal("");
   const [rdvMine, setRdvMine] = createSignal(true);
+  const [maxTaverns, setMaxTaverns] = createSignal(16);
   const [connected, setConnected] = createSignal(true);
   let wasConnected = true;
   let bottomRef: HTMLDivElement | undefined;
 
+  // --- taverns: permissions, identity, members, voice, mod alerts ---
+  const [myPerms, setMyPerms] = createSignal<api.MyPerms | null>(null);
+  const [tavern, setTavern] = createSignal<api.TavernDto | null>(null);
+  const [members, setMembers] = createSignal<api.MemberDto[]>([]);
+  const [showMembers, setShowMembers] = createSignal(false);
+  const [createChannelOpen, setCreateChannelOpen] = createSignal(false);
+  const [newChannelName, setNewChannelName] = createSignal("");
+  const [newChannelKind, setNewChannelKind] = createSignal<"text" | "voice">("text");
+  // group_id -> participants currently in that voice channel.
+  const [voiceParticipants, setVoiceParticipants] = createSignal<
+    Record<string, api.VoiceParticipant[]>
+  >({});
+  const [activeVoice, setActiveVoice] = createSignal<string | null>(null);
+  const [localVoice, setLocalVoice] = createSignal(voice.initialVoiceState());
+  const [modAlerts, setModAlerts] = createSignal<api.ModAlert[]>([]);
+
+  const can = (bit: bigint) => api.can(myPerms(), bit);
+
   const refreshGroups = () => api.listGroups().then(setGroups);
+  const refreshPerms = () =>
+    api.getMyPermissions().then(setMyPerms).catch(() => setMyPerms(null));
+  const refreshTavern = () => api.getTavern().then(setTavern).catch(() => {});
+  const refreshMembers = (groupId: string | null) => {
+    if (!groupId) return setMembers([]);
+    api.listMembers(groupId).then(setMembers).catch(() => setMembers([]));
+  };
+
+  const textChannels = () =>
+    publicGroups().filter((g) => g.channelKind !== "voice");
+  const voiceChannels = () =>
+    publicGroups().filter((g) => g.channelKind === "voice");
 
   async function loadGroupsAndSelect() {
     const gs = await api.listGroups();
     setGroups(gs);
     setActiveId(gs.length > 0 ? gs[0].id : null);
+    // Tavern context for the active server (best-effort; ignored on failure).
+    void refreshPerms();
+    void refreshTavern();
   }
+
+  // --- channel create / delete ---
+  async function submitCreateChannel(e: Event) {
+    e.preventDefault();
+    const name = newChannelName().trim();
+    if (!name) return;
+    try {
+      await api.createChannel(name, newChannelKind());
+      setNewChannelName("");
+      setCreateChannelOpen(false);
+      await refreshGroups();
+    } catch (err) {
+      setError(String(err));
+    }
+  }
+
+  async function deleteChannel(groupId: string) {
+    try {
+      await api.deleteChannel(groupId);
+      await refreshGroups();
+    } catch (err) {
+      setError(String(err));
+    }
+  }
+
+  // --- voice channel join/leave + toggles (media stubbed in voice.ts) ---
+  async function joinVoiceChannel(groupId: string) {
+    try {
+      if (activeVoice() && activeVoice() !== groupId) {
+        await voice.leave(activeVoice()!);
+      }
+      await voice.join(groupId);
+      setActiveVoice(groupId);
+      setLocalVoice({ ...voice.initialVoiceState(), groupId });
+    } catch (err) {
+      setError(String(err));
+    }
+  }
+
+  async function leaveVoiceChannel() {
+    const g = activeVoice();
+    if (!g) return;
+    try {
+      await voice.leave(g);
+    } catch (err) {
+      setError(String(err));
+    }
+    setActiveVoice(null);
+    setLocalVoice(voice.initialVoiceState());
+  }
+
+  const toggleMute = async () => {
+    const s = localVoice();
+    await voice.setMuted(s, !s.muted);
+    setLocalVoice({ ...s, muted: !s.muted });
+  };
+  const toggleCamera = async () => {
+    const s = localVoice();
+    await voice.setCamera(s, !s.cameraOn);
+    setLocalVoice({ ...s, cameraOn: !s.cameraOn });
+  };
+  const toggleScreen = async () => {
+    const s = localVoice();
+    await voice.setScreen(s, !s.screenOn);
+    setLocalVoice({ ...s, screenOn: !s.screenOn });
+  };
+
+  const participantsFor = (groupId: string) => voiceParticipants()[groupId] ?? [];
 
   function appendIfActive(msg: UiMessage) {
     if (msg.groupId !== activeId()) return;
@@ -459,6 +573,7 @@ function Home(props: { home: ServerSession }) {
         setRendezvous(s.rendezvousNode);
         setYggMode(s.yggPeerMode);
         setYggPeersText(s.yggPrivatePeers.join("\n"));
+        setMaxTaverns(s.maxHostedTaverns);
       })
       .catch(() => {});
     // DMs is the landing view; the home server is the hidden backbone, so we do
@@ -466,6 +581,8 @@ function Home(props: { home: ServerSession }) {
     refreshContacts();
     refreshBlocks();
     refreshDms();
+    // Re-spawn any taverns this client hosts and attach them to the rail.
+    attachResumedTaverns();
     api
       .getMeshStatus()
       .then((m) => {
@@ -547,6 +664,30 @@ function Home(props: { home: ServerSession }) {
         if (serverId === activeServerId()) refreshGroups();
         // A new private group from a Welcome may be an inbound DM - surface it.
         refreshDms();
+      })
+    );
+    unlisteners.push(
+      await api.onVoiceParticipant((p) => {
+        if (p.serverId !== activeServerId()) return;
+        setVoiceParticipants((prev) => {
+          const list = (prev[p.groupId] ?? []).filter((x) => x.deviceId !== p.deviceId);
+          if (p.joined) list.push(p);
+          return { ...prev, [p.groupId]: list };
+        });
+      })
+    );
+    unlisteners.push(
+      // Relayed WebRTC signaling -> the (stubbed) media layer.
+      await api.onVoiceSignal((s) => {
+        if (s.serverId !== activeServerId()) return;
+        voice.handleSignal(s);
+      })
+    );
+    unlisteners.push(
+      // Guardrail/auto-mod alerts (only owner/admins receive these).
+      await api.onModAlert((a) => {
+        if (a.serverId !== activeServerId()) return;
+        setModAlerts((prev) => [...prev.slice(-4), a]);
       })
     );
     unlisteners.push(
@@ -632,6 +773,15 @@ function Home(props: { home: ServerSession }) {
   const publicGroups = () => groups().filter((g) => g.kind !== "private");
   const privateGroups = () => groups().filter((g) => g.kind === "private");
 
+  // Refresh the member list when the member panel is open and the active public
+  // channel changes (members are server-scoped; any public channel works).
+  createEffect(() => {
+    const id = activeId();
+    if (showMembers() && view() === "server" && id && !isPrivate()) {
+      refreshMembers(id);
+    }
+  });
+
   /** Open (or re-select) a DM with a contact: ensure the cross-server DM exists,
    * make its host session active, and show the conversation. */
   /** Activate a DM conversation: make its host session active and show it. */
@@ -714,7 +864,7 @@ function Home(props: { home: ServerSession }) {
     }
   }
 
-  /** Join (or connect to) another server; it stays connected in the background. */
+  /** Join (or connect to) another tavern; it stays connected in the background. */
   async function addServer(s: ServerSession, registerFirst: boolean, inviteToken?: string) {
     await api.connect(s.id, s.endpoint, s.cert ?? undefined);
     if (registerFirst) {
@@ -731,6 +881,58 @@ function Home(props: { home: ServerSession }) {
     setAddOpen(false);
     setMessages([]);
     await loadGroupsAndSelect();
+  }
+
+  /** Create + host a new private tavern, then connect to it as owner and switch
+   * to it. Reuses the same account credentials as the home node (each tavern has
+   * its own DB, so the first account registered on it becomes its owner). */
+  async function createTavernFlow(name: string) {
+    const t = await api.createTavern(name);
+    await addServer(
+      {
+        id: t.id,
+        name: t.name,
+        endpoint: t.endpoint,
+        cert: t.cert,
+        username: props.home.username,
+        password: props.home.password,
+      },
+      true
+    );
+  }
+
+  /** On launch, re-spawn any taverns this client hosts and attach them to the
+   * rail in the background (does not change the active view). Best-effort. */
+  async function attachResumedTaverns() {
+    let list: api.TavernConnect[] = [];
+    try {
+      list = await api.resumeHostedTaverns();
+    } catch {
+      return;
+    }
+    for (const t of list) {
+      try {
+        await api.connect(t.id, t.endpoint, t.cert ?? undefined);
+        await api.login(props.home.username, props.home.password, "Desktop");
+        setServers((prev) =>
+          prev.some((p) => p.id === t.id)
+            ? prev
+            : [
+                ...prev,
+                {
+                  id: t.id,
+                  name: t.name,
+                  endpoint: t.endpoint,
+                  cert: t.cert,
+                  username: props.home.username,
+                  password: props.home.password,
+                },
+              ]
+        );
+      } catch {
+        /* one tavern failing to resume must not block the others */
+      }
+    }
   }
 
   /** Refresh the Friend Requests view (retries queued deliveries too). */
@@ -858,7 +1060,7 @@ function Home(props: { home: ServerSession }) {
 
   const showInvite = () =>
     api
-      .createInviteKey()
+      .createInviteKey(activeServerId())
       .then((key) => setInvite({ key, error: "" }))
       .catch((e) => setInvite({ key: "", error: String(e) }));
 
@@ -1130,7 +1332,7 @@ function Home(props: { home: ServerSession }) {
             </button>
           )}
         </For>
-        <button class="rail-add" title="Add a server" onClick={() => setAddOpen(true)}>
+        <button class="rail-add" title="Add a tavern" onClick={() => setAddOpen(true)}>
           <Fa icon={faPlus} />
         </button>
       </nav>
@@ -1188,20 +1390,126 @@ function Home(props: { home: ServerSession }) {
                 </>
               }
             >
-              <div class="sidebar-header">Channels</div>
-              <For each={publicGroups()}>
-                {(g) => (
+              <div class="sidebar-header sidebar-header-row">
+                <span>{tavern()?.name || "Channels"}</span>
+                <Show when={can(api.PERM.MANAGE_CHANNELS)}>
                   <button
-                    class={`channel ${g.id === activeId() ? "active" : ""}`}
-                    onClick={() => setActiveId(g.id)}
+                    class="channel-add-btn"
+                    title="Create channel"
+                    onClick={() => setCreateChannelOpen(true)}
                   >
-                    <span class="hash">
-                      <Fa icon={faHashtag} />
-                    </span>
-                    {g.name}
+                    <Fa icon={faPlus} />
                   </button>
+                </Show>
+              </div>
+              <For each={textChannels()}>
+                {(g) => (
+                  <div class={`channel-row ${g.id === activeId() ? "active" : ""}`}>
+                    <button class="channel" onClick={() => setActiveId(g.id)}>
+                      <span class="hash">
+                        <Fa icon={faHashtag} />
+                      </span>
+                      {g.name}
+                    </button>
+                    <Show when={can(api.PERM.MANAGE_CHANNELS)}>
+                      <button
+                        class="channel-del"
+                        title="Delete channel"
+                        onClick={() => deleteChannel(g.id)}
+                      >
+                        <Fa icon={faTrash} />
+                      </button>
+                    </Show>
+                  </div>
                 )}
               </For>
+
+              <Show when={voiceChannels().length > 0}>
+                <div class="sidebar-header">Voice channels</div>
+              </Show>
+              <For each={voiceChannels()}>
+                {(g) => (
+                  <>
+                    <div class={`channel-row ${activeVoice() === g.id ? "active" : ""}`}>
+                      <button
+                        class="channel voice-channel"
+                        onClick={() => joinVoiceChannel(g.id)}
+                      >
+                        <span class="hash">
+                          <Fa icon={faVolumeHigh} />
+                        </span>
+                        {g.name}
+                      </button>
+                      <Show when={can(api.PERM.MANAGE_CHANNELS)}>
+                        <button
+                          class="channel-del"
+                          title="Delete channel"
+                          onClick={() => deleteChannel(g.id)}
+                        >
+                          <Fa icon={faTrash} />
+                        </button>
+                      </Show>
+                    </div>
+                    <For each={participantsFor(g.id)}>
+                      {(p) => (
+                        <div class="voice-participant">
+                          <span class="vp-name">{p.userId.slice(0, 8)}</span>
+                          <span class="vp-icons">
+                            <Show when={p.muted}>
+                              <Fa icon={faMicrophoneSlash} />
+                            </Show>
+                            <Show when={p.cameraOn}>
+                              <Fa icon={faVideo} />
+                            </Show>
+                            <Show when={p.screenOn}>
+                              <Fa icon={faDesktop} />
+                            </Show>
+                          </span>
+                        </div>
+                      )}
+                    </For>
+                  </>
+                )}
+              </For>
+
+              <Show when={activeVoice()}>
+                <div class="voice-bar">
+                  <span class="voice-bar-label">
+                    <Fa icon={faVolumeHigh} /> Voice connected
+                  </span>
+                  <div class="voice-toggles">
+                    <button
+                      class={`voice-toggle ${localVoice().muted ? "off" : ""}`}
+                      title={localVoice().muted ? "Unmute" : "Mute"}
+                      onClick={toggleMute}
+                    >
+                      <Fa icon={localVoice().muted ? faMicrophoneSlash : faMicrophone} />
+                    </button>
+                    <button
+                      class={`voice-toggle ${localVoice().cameraOn ? "on" : ""}`}
+                      title="Toggle camera"
+                      onClick={toggleCamera}
+                    >
+                      <Fa icon={faVideo} />
+                    </button>
+                    <button
+                      class={`voice-toggle ${localVoice().screenOn ? "on" : ""}`}
+                      title="Share screen"
+                      onClick={toggleScreen}
+                    >
+                      <Fa icon={faDesktop} />
+                    </button>
+                    <button
+                      class="voice-toggle danger"
+                      title="Disconnect"
+                      onClick={leaveVoiceChannel}
+                    >
+                      <Fa icon={faPhoneSlash} />
+                    </button>
+                  </div>
+                </div>
+              </Show>
+
               <div class="sidebar-header">Direct messages</div>
               <For each={privateGroups()}>
                 {(g) => (
@@ -1224,7 +1532,7 @@ function Home(props: { home: ServerSession }) {
               </form>
               <button
                 class="invite-btn"
-                title="Create a shareable invite key (server owner only)"
+                title="Create a shareable invite key (tavern owner only)"
                 onClick={showInvite}
               >
                 <Fa icon={faUserPlus} />
@@ -1263,6 +1571,15 @@ function Home(props: { home: ServerSession }) {
                   <span class="reconnecting" title="The connection dropped; retrying...">
                     Reconnecting...
                   </span>
+                </Show>
+                <Show when={!isPrivate()}>
+                  <button
+                    class={`header-icon-btn ${showMembers() ? "active" : ""}`}
+                    title="Toggle member list"
+                    onClick={() => setShowMembers((v) => !v)}
+                  >
+                    <Fa icon={faUserGroup} />
+                  </button>
                 </Show>
               </span>
             </header>
@@ -1305,13 +1622,120 @@ function Home(props: { home: ServerSession }) {
             </form>
           </main>
         </Show>
+
+        <Show when={view() === "server" && showMembers() && !isPrivate()}>
+          <aside class="members-panel">
+            <div class="sidebar-header">Members — {members().length}</div>
+            <For each={members()} fallback={<div class="sidebar-empty">No members.</div>}>
+              {(m) => (
+                <div class="member-row">
+                  <span class={`member-dot ${m.online ? "online" : ""}`} />
+                  <span class="member-avatar">
+                    {(m.displayName[0] ?? "?").toUpperCase()}
+                  </span>
+                  <span class="member-name" title={m.username}>
+                    {m.displayName}
+                  </span>
+                  <Show when={m.isOwner}>
+                    <span class="role-badge owner">owner</span>
+                  </Show>
+                  <span class="member-actions">
+                    <Show when={can(api.PERM.KICK_MEMBERS) && !m.isOwner}>
+                      <button
+                        class="member-action"
+                        title="Kick from channel"
+                        onClick={() => activeId() && api.kickMember(activeId()!, m.userId).then(() => refreshMembers(activeId())).catch((e) => setError(String(e)))}
+                      >
+                        kick
+                      </button>
+                    </Show>
+                    <Show when={can(api.PERM.BAN_MEMBERS) && !m.isOwner}>
+                      <button
+                        class="member-action danger"
+                        title="Ban from server"
+                        onClick={() => api.banMember(m.userId).then(() => refreshMembers(activeId())).catch((e) => setError(String(e)))}
+                      >
+                        ban
+                      </button>
+                    </Show>
+                  </span>
+                </div>
+              )}
+            </For>
+          </aside>
+        </Show>
       </div>
+
+      <Show when={modAlerts().length > 0}>
+        <div class="mod-alert-stack">
+          <For each={modAlerts()}>
+            {(a) => (
+              <div class={`mod-alert-toast ${a.severity}`}>
+                <Fa icon={faTriangleExclamation} />
+                <span>
+                  {a.action} on {a.target || "server"} — {a.reason}
+                </span>
+              </div>
+            )}
+          </For>
+          <button class="mod-alert-clear" onClick={() => setModAlerts([])}>
+            dismiss
+          </button>
+        </div>
+      </Show>
+
+      <Show when={createChannelOpen()}>
+        <div class="modal-backdrop" onClick={() => setCreateChannelOpen(false)}>
+          <div class="modal" onClick={(e) => e.stopPropagation()}>
+            <h3>Create channel</h3>
+            <form onSubmit={submitCreateChannel}>
+              <div class="field">
+                <label class="field-label">Channel name</label>
+                <input
+                  value={newChannelName()}
+                  onInput={(e) => setNewChannelName(e.currentTarget.value)}
+                  placeholder="new-channel"
+                  autofocus
+                />
+              </div>
+              <div class="field">
+                <label class="field-label">Type</label>
+                <div class="channel-kind-pick">
+                  <button
+                    type="button"
+                    class={`btn-secondary ${newChannelKind() === "text" ? "active" : ""}`}
+                    onClick={() => setNewChannelKind("text")}
+                  >
+                    <Fa icon={faHashtag} /> Text
+                  </button>
+                  <button
+                    type="button"
+                    class={`btn-secondary ${newChannelKind() === "voice" ? "active" : ""}`}
+                    onClick={() => setNewChannelKind("voice")}
+                  >
+                    <Fa icon={faVolumeHigh} /> Voice
+                  </button>
+                </div>
+              </div>
+              <div class="modal-footer">
+                <button type="button" class="btn-secondary" onClick={() => setCreateChannelOpen(false)}>
+                  Cancel
+                </button>
+                <button type="submit" disabled={!newChannelName().trim()}>
+                  Create
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      </Show>
 
       <Show when={addOpen()}>
         <AddServerModal
           defaultUsername={props.home.username}
           onClose={() => setAddOpen(false)}
           onJoin={addServer}
+          onCreatePrivate={createTavernFlow}
         />
       </Show>
 
@@ -1501,6 +1925,43 @@ function Home(props: { home: ServerSession }) {
                         </span>
                       </div>
                     </Show>
+
+                    <div class="settings-subsection">
+                      <h4>Hosting</h4>
+                      <div class="field">
+                        <label class="field-label" for="max-taverns">
+                          Max taverns hosted at once
+                        </label>
+                        <input
+                          id="max-taverns"
+                          type="number"
+                          min="1"
+                          max="200"
+                          value={maxTaverns()}
+                          onInput={(e) =>
+                            setMaxTaverns(
+                              Math.max(1, Math.min(200, Number(e.currentTarget.value) || 1))
+                            )
+                          }
+                          onChange={() =>
+                            api
+                              .setMaxHostedTaverns(maxTaverns())
+                              .catch((er) => setError(String(er)))
+                          }
+                        />
+                        <div class="field-help">
+                          Each tavern you host runs its own local server on a port starting at
+                          50052. The default is 16.
+                        </div>
+                        <Show when={maxTaverns() > 16}>
+                          <div class="note note-warn">
+                            Hosting more than 16 taverns uses more ports (50052 and up). A high
+                            count can collide with other software using those ports and uses more
+                            memory and CPU.
+                          </div>
+                        </Show>
+                      </div>
+                    </div>
                   </div>
                 </Show>
 
@@ -1624,7 +2085,12 @@ function AddServerModal(props: {
   defaultUsername: string;
   onClose: () => void;
   onJoin: (s: ServerSession, registerFirst: boolean, inviteToken?: string) => Promise<void>;
+  onCreatePrivate: (name: string) => Promise<void>;
 }) {
+  // Step 1 is a Create-vs-Join choice; we never drop the user straight into Join.
+  const [step, setStep] = createSignal<"choice" | "create" | "join">("choice");
+  const [createKind, setCreateKind] = createSignal<"private" | null>(null);
+  const [tavernName, setTavernName] = createSignal("");
   const [tab, setTab] = createSignal<"key" | "url">("key");
   const [inviteKey, setInviteKey] = createSignal("");
   const [url, setUrl] = createSignal("");
@@ -1645,6 +2111,16 @@ function AddServerModal(props: {
     }
   };
 
+  const createPrivate = () =>
+    run(async () => {
+      const name = tavernName().trim();
+      if (!name) {
+        setError("Enter a tavern name.");
+        return;
+      }
+      await props.onCreatePrivate(name);
+    });
+
   const joinByKey = () =>
     run(async () => {
       const info = await api.decodeInvite(inviteKey().trim());
@@ -1652,7 +2128,7 @@ function AddServerModal(props: {
       await props.onJoin(
         {
           id: crypto.randomUUID(),
-          name: info.name || "Server",
+          name: info.name || "Tavern",
           endpoint: info.endpoint,
           cert: info.cert,
           username: username(),
@@ -1681,61 +2157,146 @@ function AddServerModal(props: {
   return (
     <div class="modal-backdrop" onClick={props.onClose}>
       <div class="modal" onClick={(e) => e.stopPropagation()}>
-        <h3>Add a server</h3>
-        <div class="tabs">
-          <button class={tab() === "key" ? "tab active" : "tab"} onClick={() => setTab("key")}>
-            Invite key
-          </button>
-          <button class={tab() === "url" ? "tab active" : "tab"} onClick={() => setTab("url")}>
-            Server URL
-          </button>
-        </div>
+        <Switch>
+          {/* Step 1: choose to create or join. */}
+          <Match when={step() === "choice"}>
+            <h3>Add a tavern</h3>
+            <div class="choice-cards">
+              <button class="choice-card" onClick={() => setStep("create")}>
+                <span class="choice-card-icon">
+                  <Fa icon={faPlus} />
+                </span>
+                <span class="choice-card-title">Create a tavern</span>
+                <span class="choice-card-sub">Host your own server</span>
+              </button>
+              <button class="choice-card" onClick={() => setStep("join")}>
+                <span class="choice-card-icon">
+                  <Fa icon={faRightToBracket} />
+                </span>
+                <span class="choice-card-title">Join a tavern</span>
+                <span class="choice-card-sub">Use an invite key or URL</span>
+              </button>
+            </div>
+            <div class="modal-footer">
+              <button class="btn-secondary" onClick={props.onClose}>
+                Cancel
+              </button>
+            </div>
+          </Match>
 
-        <Show when={tab() === "key"}>
-          <textarea
-            class="invite-input"
-            value={inviteKey()}
-            onInput={(e) => setInviteKey(e.currentTarget.value)}
-            placeholder="Paste an invite key (accord1:...)"
-            rows={3}
-          />
-        </Show>
-        <Show when={tab() === "url"}>
-          <div class="field">
-            <label class="field-label">Server URL</label>
-            <input
-              value={url()}
-              onInput={(e) => setUrl(e.currentTarget.value)}
-              placeholder="http://host:50051"
-            />
-          </div>
-        </Show>
+          {/* Step 2a: create — pick private (real) or public (scaffold). */}
+          <Match when={step() === "create"}>
+            <h3>Create a tavern</h3>
+            <div class="choice-cards">
+              <button
+                class={`choice-card ${createKind() === "private" ? "active" : ""}`}
+                onClick={() => setCreateKind("private")}
+              >
+                <span class="choice-card-icon">
+                  <Fa icon={faLock} />
+                </span>
+                <span class="choice-card-title">Private tavern</span>
+                <span class="choice-card-sub">Invite-only; you host it</span>
+              </button>
+              <button class="choice-card disabled" disabled title="Coming soon">
+                <span class="choice-card-badge">Soon</span>
+                <span class="choice-card-icon">
+                  <Fa icon={faGlobe} />
+                </span>
+                <span class="choice-card-title">Public tavern</span>
+                <span class="choice-card-sub">Needs public hosting nodes (not available yet)</span>
+              </button>
+            </div>
 
-        <div class="field">
-          <label class="field-label">Username</label>
-          <input value={username()} onInput={(e) => setUsername(e.currentTarget.value)} />
-        </div>
-        <div class="field">
-          <label class="field-label">Password</label>
-          <input
-            type="password"
-            value={password()}
-            onInput={(e) => setPassword(e.currentTarget.value)}
-          />
-        </div>
+            <Show when={createKind() === "private"}>
+              <div class="field">
+                <label class="field-label">Tavern name</label>
+                <input
+                  autofocus
+                  value={tavernName()}
+                  onInput={(e) => setTavernName(e.currentTarget.value)}
+                  placeholder="My Tavern"
+                />
+              </div>
+            </Show>
 
-        <Show when={error()}>
-          <div class="error">{error()}</div>
-        </Show>
+            <Show when={error()}>
+              <div class="error">{error()}</div>
+            </Show>
+            <div class="modal-footer">
+              <button class="btn-secondary" onClick={() => setStep("choice")}>
+                Back
+              </button>
+              <button
+                disabled={busy() || createKind() !== "private" || !tavernName().trim()}
+                onClick={createPrivate}
+              >
+                {busy() ? "Creating..." : "Create tavern"}
+              </button>
+            </div>
+          </Match>
 
-        <div class="modal-footer">
-          <button class="btn-secondary" onClick={props.onClose}>
-            Cancel
-          </button>
-          <button disabled={busy()} onClick={() => (tab() === "key" ? joinByKey() : connectByUrl())}>
-            {busy() ? "Connecting..." : "Add server"}
-          </button>
-        </div>
+          {/* Step 2b: join by invite key or URL. */}
+          <Match when={step() === "join"}>
+            <h3>Join a tavern</h3>
+            <div class="tabs">
+              <button class={tab() === "key" ? "tab active" : "tab"} onClick={() => setTab("key")}>
+                Invite key
+              </button>
+              <button class={tab() === "url" ? "tab active" : "tab"} onClick={() => setTab("url")}>
+                Tavern URL
+              </button>
+            </div>
+
+            <Show when={tab() === "key"}>
+              <textarea
+                class="invite-input"
+                value={inviteKey()}
+                onInput={(e) => setInviteKey(e.currentTarget.value)}
+                placeholder="Paste an invite key (accord1:...)"
+                rows={3}
+              />
+            </Show>
+            <Show when={tab() === "url"}>
+              <div class="field">
+                <label class="field-label">Tavern URL</label>
+                <input
+                  value={url()}
+                  onInput={(e) => setUrl(e.currentTarget.value)}
+                  placeholder="http://host:50051"
+                />
+              </div>
+            </Show>
+
+            <div class="field">
+              <label class="field-label">Username</label>
+              <input value={username()} onInput={(e) => setUsername(e.currentTarget.value)} />
+            </div>
+            <div class="field">
+              <label class="field-label">Password</label>
+              <input
+                type="password"
+                value={password()}
+                onInput={(e) => setPassword(e.currentTarget.value)}
+              />
+            </div>
+
+            <Show when={error()}>
+              <div class="error">{error()}</div>
+            </Show>
+            <div class="modal-footer">
+              <button class="btn-secondary" onClick={() => setStep("choice")}>
+                Back
+              </button>
+              <button
+                disabled={busy()}
+                onClick={() => (tab() === "key" ? joinByKey() : connectByUrl())}
+              >
+                {busy() ? "Connecting..." : "Join tavern"}
+              </button>
+            </div>
+          </Match>
+        </Switch>
       </div>
     </div>
   );

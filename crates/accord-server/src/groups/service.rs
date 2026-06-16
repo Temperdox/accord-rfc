@@ -1,23 +1,33 @@
 //! `GroupService` implementation.
 //!
-//! For the walking skeleton, only **public** channels are fully functional:
-//! create, list, info, and open self-join via `AddMembers`. Private (MLS) group
-//! creation and membership-by-Commit arrive in the private-chat phase.
+//! Public channels: create/list/info/open-self-join, plus tavern administration
+//! (delete, member list, identity) and moderation (kick/ban). Private (MLS) group
+//! creation carries the initial Commit + Welcomes (the server stays an opaque
+//! relay). Privileged mutations are gated by RBAC ([`crate::authz`]) AND the
+//! guardrail/auto-mod layer ([`crate::guardrails`]) — the latter rate-limits and
+//! flags hostile actions even for admins, audits them, and alerts owner/admins.
 
 use std::sync::Arc;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use accord_proto::group_service_server::GroupService;
 use accord_proto::{
-    AddMembersRequest, AddMembersResponse, ChatKind, CreateGroupResponse,
-    CreatePrivateGroupRequest, CreatePublicGroupRequest, GetGroupInfoRequest, GetGroupInfoResponse,
-    GroupId, GroupSummary, ListGroupsRequest, ListGroupsResponse, RemoveMembersRequest,
-    RemoveMembersResponse, UserId,
+    AddMembersRequest, AddMembersResponse, BanInfo, BanMemberRequest, BanMemberResponse, ChatKind,
+    CreateGroupResponse, CreatePrivateGroupRequest, CreatePublicGroupRequest, DeleteGroupRequest,
+    DeleteGroupResponse, GetGroupInfoRequest, GetGroupInfoResponse, GetTavernRequest, GroupId,
+    GroupSummary, KickMemberRequest, KickMemberResponse, ListBansRequest, ListBansResponse,
+    ListGroupsRequest, ListGroupsResponse, ListMembersRequest, ListMembersResponse, MemberInfo,
+    ModAlert, RemoveMembersRequest, RemoveMembersResponse, Severity, TavernInfo,
+    UnbanMemberRequest, UnbanMemberResponse, UpdateTavernRequest, UserId,
 };
+use accord_types::perms::Permissions;
 use tonic::{Request, Response, Status};
 use uuid::Uuid;
 
 use crate::auth::jwt::JwtKeys;
+use crate::authz;
 use crate::error::ServerError;
+use crate::guardrails::{ActionClass, ActionContext, GuardrailDecision, Guardrails};
 use crate::messaging::Hub;
 use crate::store::Store;
 use crate::store::model::GroupSummaryRow;
@@ -29,14 +39,108 @@ pub struct GroupSvc {
     store: Arc<dyn Store>,
     jwt: JwtKeys,
     hub: Arc<Hub>,
+    guardrails: Arc<Guardrails>,
 }
 
 impl GroupSvc {
-    /// Construct the service. The [`Hub`] is used to relay MLS Welcomes when a
-    /// private group is created.
+    /// Construct the service. The [`Hub`] relays MLS Welcomes (private groups) and
+    /// `ModAlert`s; [`Guardrails`] gates privileged mutations.
     #[must_use]
-    pub fn new(store: Arc<dyn Store>, jwt: JwtKeys, hub: Arc<Hub>) -> Self {
-        Self { store, jwt, hub }
+    pub fn new(
+        store: Arc<dyn Store>,
+        jwt: JwtKeys,
+        hub: Arc<Hub>,
+        guardrails: Arc<Guardrails>,
+    ) -> Self {
+        Self {
+            store,
+            jwt,
+            hub,
+            guardrails,
+        }
+    }
+
+    /// Run a privileged action through the guardrail layer: rate-limit + name
+    /// heuristics, audit-log the notable outcomes, and alert owner/admins live.
+    /// Returns `Ok` if the action may proceed, else a mapped gRPC `Status`.
+    async fn guard(
+        &self,
+        actor: Uuid,
+        action: ActionClass,
+        target: &str,
+        name: Option<&str>,
+        recent_names: &[String],
+    ) -> Result<(), Status> {
+        let is_owner = self.store.is_owner(actor).await.unwrap_or(false);
+        let ctx = ActionContext {
+            name,
+            recent_names,
+            is_owner,
+        };
+        let decision = self.guardrails.check(actor, action, &ctx);
+
+        if decision.is_notable() {
+            let (verdict, reason, severity) = match &decision {
+                GuardrailDecision::Throttle { reason, .. } => {
+                    ("throttle", reason.clone(), Severity::Hostile)
+                }
+                GuardrailDecision::Deny { reason } => ("deny", reason.clone(), Severity::Hostile),
+                GuardrailDecision::AllowFlagged { reason } => {
+                    ("flagged", reason.clone(), Severity::Warn)
+                }
+                GuardrailDecision::Allow => ("allow", String::new(), Severity::Info),
+            };
+            // Best-effort: a moderation audit failure must not block the action's
+            // own error path.
+            let _ = self
+                .store
+                .record_audit(actor, action.as_str(), target, verdict, &reason)
+                .await;
+            self.alert_admins(actor, action.as_str(), target, &reason, severity)
+                .await;
+        }
+
+        match decision {
+            GuardrailDecision::Allow | GuardrailDecision::AllowFlagged { .. } => Ok(()),
+            GuardrailDecision::Throttle { reason, .. } => Err(Status::resource_exhausted(reason)),
+            GuardrailDecision::Deny { reason } => Err(Status::failed_precondition(reason)),
+        }
+    }
+
+    /// Fan a `ModAlert` to connected owner/admin devices.
+    async fn alert_admins(
+        &self,
+        actor: Uuid,
+        action: &str,
+        target: &str,
+        reason: &str,
+        severity: Severity,
+    ) {
+        let mask =
+            (Permissions::ADMINISTRATOR.bits() | Permissions::MANAGE_SERVER.bits()) as i64;
+        let Ok(devices) = self.store.admin_device_ids(mask).await else {
+            return;
+        };
+        if devices.is_empty() {
+            return;
+        }
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default();
+        let alert = ModAlert {
+            actor_id: Some(UserId {
+                value: actor.to_string(),
+            }),
+            action: action.to_owned(),
+            target: target.to_owned(),
+            reason: reason.to_owned(),
+            severity: severity as i32,
+            timestamp: Some(prost_types::Timestamp {
+                seconds: now.as_secs() as i64,
+                nanos: now.subsec_nanos() as i32,
+            }),
+        };
+        self.hub.send_mod_alert(&devices, alert);
     }
 }
 
@@ -54,15 +158,42 @@ impl GroupService for GroupSvc {
         if name.is_empty() {
             return Err(ServerError::InvalidArgument("group name is required".into()).into());
         }
+        let channel_kind = match req.channel_kind.trim() {
+            "voice" => "voice",
+            _ => "text",
+        };
+
+        // RBAC: only members who can manage channels may create them.
+        authz::require(self.store.as_ref(), user_id, Permissions::MANAGE_CHANNELS).await?;
+
+        // Guardrail: rate-limit + spam/random-name heuristics over the existing
+        // channel names this user can see.
+        let recent_names: Vec<String> = self
+            .store
+            .list_groups_for_user(user_id)
+            .await
+            .unwrap_or_default()
+            .into_iter()
+            .filter(|g| g.kind == "public")
+            .map(|g| g.name)
+            .collect();
+        self.guard(
+            user_id,
+            ActionClass::CreateChannel,
+            name,
+            Some(name),
+            &recent_names,
+        )
+        .await?;
 
         let group_id = self
             .store
-            .create_public_group(name, req.description.trim())
+            .create_public_group(name, req.description.trim(), channel_kind)
             .await?;
         // The creator owns the channel.
         self.store.add_member(group_id, user_id, "owner").await?;
 
-        tracing::info!(%group_id, name, "created public group");
+        tracing::info!(%group_id, name, channel_kind, "created public group");
         Ok(Response::new(CreateGroupResponse {
             group_id: Some(GroupId {
                 value: group_id.to_string(),
@@ -153,13 +284,17 @@ impl GroupService for GroupSvc {
             ));
         }
 
-        // A guest cannot be added to channels either (by themselves or others).
         for member in &req.member_ids {
             let uid = Uuid::parse_str(&member.value).map_err(|_| {
                 ServerError::InvalidArgument("member id is not a valid UUID".into())
             })?;
+            // A guest cannot be added to channels either (by themselves or others).
             if self.store.is_user_guest(uid).await? {
                 return Err(ServerError::PermissionDenied.into());
+            }
+            // A banned account cannot (re)join channels.
+            if self.store.is_banned(uid).await? {
+                return Err(Status::failed_precondition("user is banned from this server"));
             }
             self.store.add_member(group_id, uid, "member").await?;
         }
@@ -168,11 +303,26 @@ impl GroupService for GroupSvc {
 
     async fn remove_members(
         &self,
-        _request: Request<RemoveMembersRequest>,
+        request: Request<RemoveMembersRequest>,
     ) -> Result<Response<RemoveMembersResponse>, Status> {
-        Err(Status::unimplemented(
-            "member removal arrives with the moderation/MLS phase",
-        ))
+        // Self-leave for any member; removing others requires KICK_MEMBERS.
+        let claims = authenticate(&request, &self.jwt)?;
+        let caller = parse_uuid(&claims.sub)?;
+        let req = request.into_inner();
+        let group_id = require_group_id(&req.group_id)?;
+
+        for member in &req.member_ids {
+            let uid = Uuid::parse_str(&member.value).map_err(|_| {
+                ServerError::InvalidArgument("member id is not a valid UUID".into())
+            })?;
+            if uid != caller {
+                authz::require(self.store.as_ref(), caller, Permissions::KICK_MEMBERS).await?;
+                self.guard(caller, ActionClass::KickMember, &uid.to_string(), None, &[])
+                    .await?;
+            }
+            self.store.remove_member(group_id, uid).await?;
+        }
+        Ok(Response::new(RemoveMembersResponse {}))
     }
 
     async fn list_groups(
@@ -213,6 +363,214 @@ impl GroupService for GroupSvc {
             member_ids,
         }))
     }
+
+    async fn delete_group(
+        &self,
+        request: Request<DeleteGroupRequest>,
+    ) -> Result<Response<DeleteGroupResponse>, Status> {
+        let claims = authenticate(&request, &self.jwt)?;
+        let user_id = parse_uuid(&claims.sub)?;
+        let req = request.into_inner();
+        let group_id = require_group_id(&req.group_id)?;
+
+        let group = self.store.get_group(group_id).await?;
+        if group.kind != "public" {
+            return Err(Status::failed_precondition(
+                "private groups are not deleted through this RPC",
+            ));
+        }
+        authz::require(self.store.as_ref(), user_id, Permissions::MANAGE_CHANNELS).await?;
+        self.guard(user_id, ActionClass::DeleteChannel, &group.name, None, &[])
+            .await?;
+
+        self.store.delete_group(group_id).await?;
+        tracing::info!(%group_id, "deleted public group");
+        Ok(Response::new(DeleteGroupResponse {}))
+    }
+
+    async fn list_members(
+        &self,
+        request: Request<ListMembersRequest>,
+    ) -> Result<Response<ListMembersResponse>, Status> {
+        let claims = authenticate(&request, &self.jwt)?;
+        let user_id = parse_uuid(&claims.sub)?;
+        let req = request.into_inner();
+        let group_id = require_group_id(&req.group_id)?;
+
+        if !self.store.is_member(group_id, user_id).await? {
+            return Err(ServerError::PermissionDenied.into());
+        }
+
+        let rows = self.store.list_members(group_id).await?;
+        let mut members = Vec::with_capacity(rows.len());
+        for m in rows {
+            let role_ids = self
+                .store
+                .roles_for_user(m.user_id)
+                .await
+                .unwrap_or_default()
+                .into_iter()
+                .map(|r| r.id.to_string())
+                .collect();
+            // Online = any of the member's devices has a live stream here
+            // (single-instance liveness, like the hub's other presence checks).
+            let online = self
+                .store
+                .device_ids_for_user(m.user_id)
+                .await
+                .unwrap_or_default()
+                .into_iter()
+                .any(|d| self.hub.is_connected(d));
+            members.push(MemberInfo {
+                user_id: Some(UserId {
+                    value: m.user_id.to_string(),
+                }),
+                username: m.username,
+                display_name: m.display_name,
+                is_owner: m.is_owner,
+                online,
+                role_ids,
+            });
+        }
+        Ok(Response::new(ListMembersResponse { members }))
+    }
+
+    async fn get_tavern(
+        &self,
+        request: Request<GetTavernRequest>,
+    ) -> Result<Response<TavernInfo>, Status> {
+        let _claims = authenticate(&request, &self.jwt)?;
+        let t = self.store.get_tavern().await?;
+        Ok(Response::new(TavernInfo {
+            name: t.name,
+            icon_url: t.icon_url,
+            description: t.description,
+            linking_enabled: t.linking_enabled,
+        }))
+    }
+
+    async fn update_tavern(
+        &self,
+        request: Request<UpdateTavernRequest>,
+    ) -> Result<Response<TavernInfo>, Status> {
+        let claims = authenticate(&request, &self.jwt)?;
+        let user_id = parse_uuid(&claims.sub)?;
+        let req = request.into_inner();
+
+        authz::require(self.store.as_ref(), user_id, Permissions::MANAGE_SERVER).await?;
+        self.guard(user_id, ActionClass::UpdateServer, "tavern", None, &[])
+            .await?;
+
+        let tavern_id = Uuid::parse_str(super::TAVERN_ID)
+            .map_err(|_| Status::internal("bad TAVERN_ID constant"))?;
+        self.store
+            .upsert_tavern(
+                tavern_id,
+                req.name.trim(),
+                req.icon_url.trim(),
+                req.description.trim(),
+            )
+            .await?;
+        let t = self.store.get_tavern().await?;
+        Ok(Response::new(TavernInfo {
+            name: t.name,
+            icon_url: t.icon_url,
+            description: t.description,
+            linking_enabled: t.linking_enabled,
+        }))
+    }
+
+    async fn kick_member(
+        &self,
+        request: Request<KickMemberRequest>,
+    ) -> Result<Response<KickMemberResponse>, Status> {
+        let claims = authenticate(&request, &self.jwt)?;
+        let caller = parse_uuid(&claims.sub)?;
+        let req = request.into_inner();
+        let group_id = require_group_id(&req.group_id)?;
+        let target = require_user_id(&req.user_id)?;
+
+        if target != caller {
+            authz::require(self.store.as_ref(), caller, Permissions::KICK_MEMBERS).await?;
+            self.guard(caller, ActionClass::KickMember, &target.to_string(), None, &[])
+                .await?;
+        }
+        self.store.remove_member(group_id, target).await?;
+        tracing::info!(%group_id, %target, "kicked member");
+        Ok(Response::new(KickMemberResponse {}))
+    }
+
+    async fn ban_member(
+        &self,
+        request: Request<BanMemberRequest>,
+    ) -> Result<Response<BanMemberResponse>, Status> {
+        let claims = authenticate(&request, &self.jwt)?;
+        let caller = parse_uuid(&claims.sub)?;
+        let req = request.into_inner();
+        let target = require_user_id(&req.user_id)?;
+
+        authz::require(self.store.as_ref(), caller, Permissions::BAN_MEMBERS).await?;
+        if self.store.is_owner(target).await? {
+            return Err(Status::failed_precondition("cannot ban the server owner"));
+        }
+        self.guard(caller, ActionClass::BanMember, &target.to_string(), None, &[])
+            .await?;
+
+        // Remove the banned account from every channel, then record the ban. The
+        // cryptographic ban-tag (BAN-PLAN.md Layer 2) layers on later; this is the
+        // account-level subset.
+        for gid in self.store.group_ids_for_user(target).await? {
+            self.store.remove_member(gid, target).await?;
+        }
+        self.store
+            .ban_user(target, caller, req.reason.trim())
+            .await?;
+        // Best-effort: drop the banned user's devices from any live voice channels
+        // and revoke nothing here (token revocation is a later hardening step).
+        tracing::info!(%target, "banned member");
+        Ok(Response::new(BanMemberResponse {}))
+    }
+
+    async fn unban_member(
+        &self,
+        request: Request<UnbanMemberRequest>,
+    ) -> Result<Response<UnbanMemberResponse>, Status> {
+        let claims = authenticate(&request, &self.jwt)?;
+        let caller = parse_uuid(&claims.sub)?;
+        let req = request.into_inner();
+        let target = require_user_id(&req.user_id)?;
+
+        authz::require(self.store.as_ref(), caller, Permissions::BAN_MEMBERS).await?;
+        self.store.unban_user(target).await?;
+        Ok(Response::new(UnbanMemberResponse {}))
+    }
+
+    async fn list_bans(
+        &self,
+        request: Request<ListBansRequest>,
+    ) -> Result<Response<ListBansResponse>, Status> {
+        let claims = authenticate(&request, &self.jwt)?;
+        let caller = parse_uuid(&claims.sub)?;
+        authz::require(self.store.as_ref(), caller, Permissions::BAN_MEMBERS).await?;
+
+        let bans = self
+            .store
+            .list_bans()
+            .await?
+            .into_iter()
+            .map(|b| BanInfo {
+                user_id: Some(UserId {
+                    value: b.user_id.to_string(),
+                }),
+                reason: b.reason,
+                banned_by: Some(UserId {
+                    value: b.banned_by.to_string(),
+                }),
+                created_at_ms: b.created_at_ms,
+            })
+            .collect();
+        Ok(Response::new(ListBansResponse { bans }))
+    }
 }
 
 // --- helpers ----------------------------------------------------------------
@@ -230,6 +588,7 @@ fn summary_to_proto(row: GroupSummaryRow) -> GroupSummary {
         name: row.name,
         kind: kind as i32,
         member_count: row.member_count.max(0) as u32,
+        channel_kind: row.channel_kind,
     }
 }
 
@@ -239,6 +598,14 @@ fn require_group_id(group_id: &Option<GroupId>) -> Result<Uuid, ServerError> {
         .ok_or_else(|| ServerError::InvalidArgument("group_id is required".into()))?;
     Uuid::parse_str(&value.value)
         .map_err(|_| ServerError::InvalidArgument("group_id is not a valid UUID".into()))
+}
+
+fn require_user_id(user_id: &Option<UserId>) -> Result<Uuid, ServerError> {
+    let value = user_id
+        .as_ref()
+        .ok_or_else(|| ServerError::InvalidArgument("user_id is required".into()))?;
+    Uuid::parse_str(&value.value)
+        .map_err(|_| ServerError::InvalidArgument("user_id is not a valid UUID".into()))
 }
 
 fn parse_uuid(s: &str) -> Result<Uuid, ServerError> {

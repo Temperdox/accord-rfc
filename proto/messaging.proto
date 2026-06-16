@@ -37,6 +37,11 @@ message ClientMessage {
     SendPrivateMessage private_message = 2;
     TypingIndicator typing = 3;
     Ack ack = 4;
+    // Voice/video (scaffold): WebRTC signaling relayed peer-to-peer and a
+    // join/leave/mute/cam/screen state update. Media itself is P2P (DTLS-SRTP)
+    // and never touches the server; `data` below is opaque, like MLS ciphertext.
+    VoiceSignal voice_signal = 5;
+    VoiceStateUpdate voice_state = 6;
   }
 }
 
@@ -75,6 +80,11 @@ message ServerMessage {
     MlsWelcomeNotification welcome_notification = 4;
     TypingIndicator typing = 5;
     PresenceUpdate presence = 6;
+    // Voice/video (scaffold): a relayed signaling envelope, a channel-wide
+    // participant state change, and a moderation alert to owner/admins.
+    VoiceSignal voice_signal = 7;
+    VoiceParticipant voice_participant = 8;
+    ModAlert mod_alert = 9;
   }
 }
 
@@ -132,4 +142,70 @@ message FetchPublicHistoryResponse {
 
 message FetchPrivateHistoryResponse {
   repeated IncomingPrivateMessage messages = 1;
+}
+
+// ---- Voice/video (scaffold) ------------------------------------------------
+//
+// Transport: WebRTC P2P in the client webview (RTCPeerConnection +
+// getUserMedia/getDisplayMedia). The server is a *signaling relay only* - it
+// forwards `VoiceSignal` envelopes verbatim between member devices and never
+// inspects `data`, preserving the §5 crypto boundary (media is DTLS-SRTP P2P).
+// Live media wiring is a later phase; these types are the seam.
+
+// A point-to-point WebRTC signaling message relayed through the server.
+message VoiceSignal {
+  GroupId group_id = 1;
+  DeviceId from_device = 2;   // set by the server on relay
+  DeviceId target_device = 3; // recipient device for this offer/answer/candidate
+  SignalKind kind = 4;
+  bytes data = 5; // opaque SDP / ICE payload; never inspected by the server
+}
+
+enum SignalKind {
+  SIGNAL_KIND_UNSPECIFIED = 0;
+  SIGNAL_KIND_SDP_OFFER = 1;
+  SIGNAL_KIND_SDP_ANSWER = 2;
+  SIGNAL_KIND_ICE_CANDIDATE = 3;
+}
+
+// Client -> server: this device's voice state in a voice channel.
+message VoiceStateUpdate {
+  GroupId group_id = 1;
+  bool joined = 2; // false = leaving
+  bool muted = 3;
+  bool camera_on = 4;
+  bool screen_on = 5;
+}
+
+// Server -> channel members: a participant's voice state changed (also sent as
+// a burst to a newcomer so it learns who to negotiate with).
+message VoiceParticipant {
+  GroupId group_id = 1;
+  UserId user_id = 2;
+  DeviceId device_id = 3;
+  bool joined = 4;
+  bool muted = 5;
+  bool camera_on = 6;
+  bool screen_on = 7;
+}
+
+// ---- Moderation alerts -----------------------------------------------------
+//
+// Emitted by the guardrail/auto-mod layer to connected owner/admin devices when
+// a privileged action is throttled, denied, or flagged hostile (see
+// src/guardrails/). Lets other admins/owner witness hostile attempts live.
+message ModAlert {
+  UserId actor_id = 1;
+  string action = 2; // ActionClass, e.g. "delete_channel"
+  string target = 3; // affected entity (channel/user id or name)
+  string reason = 4;
+  Severity severity = 5;
+  google.protobuf.Timestamp timestamp = 6;
+}
+
+enum Severity {
+  SEVERITY_UNSPECIFIED = 0;
+  SEVERITY_INFO = 1;
+  SEVERITY_WARN = 2;
+  SEVERITY_HOSTILE = 3;
 }

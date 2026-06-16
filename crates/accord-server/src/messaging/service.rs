@@ -6,10 +6,11 @@ use std::sync::Arc;
 
 use accord_proto::client_message::Payload as ClientPayload;
 use accord_proto::messaging_service_server::MessagingService;
+use accord_proto::server_message::Payload as ServerPayload;
 use accord_proto::{
-    ClientMessage, FetchHistoryRequest, FetchPrivateHistoryResponse, FetchPublicHistoryResponse,
-    GroupId, IncomingPrivateMessage, IncomingPublicMessage, MessageId, SendPrivateMessage,
-    SendPublicMessage, ServerMessage, UserId,
+    ClientMessage, DeviceId, FetchHistoryRequest, FetchPrivateHistoryResponse,
+    FetchPublicHistoryResponse, GroupId, IncomingPrivateMessage, IncomingPublicMessage, MessageId,
+    SendPrivateMessage, SendPublicMessage, ServerMessage, UserId, VoiceSignal, VoiceStateUpdate,
 };
 use futures::Stream;
 use tokio_stream::wrappers::ReceiverStream;
@@ -19,8 +20,8 @@ use uuid::Uuid;
 use crate::auth::jwt::JwtKeys;
 use crate::error::ServerError;
 use crate::messaging::hub::{
-    Hub, PrivateBusMessage, PrivateInboxPayload, PublicBusMessage, commit_notification,
-    encode_private_inbox, private_notification, welcome_notification,
+    Hub, PrivateBusMessage, PrivateInboxPayload, PublicBusMessage, VoiceState, commit_notification,
+    encode_private_inbox, private_notification, voice_participant_msg, welcome_notification,
 };
 use crate::store::Store;
 use crate::util::{authenticate, to_proto_timestamp};
@@ -198,12 +199,97 @@ async fn handle_client_message(
             // Typing indicators are a later enhancement.
             Ok(())
         }
+        Some(ClientPayload::VoiceSignal(s)) => {
+            handle_voice_signal(store, hub, user_id, device_id, s).await
+        }
+        Some(ClientPayload::VoiceState(s)) => {
+            handle_voice_state(store, hub, user_id, device_id, s).await
+        }
         Some(ClientPayload::Ack(_)) => {
             // Acks matter once the per-device offline push queue exists.
             Ok(())
         }
         None => Ok(()),
     }
+}
+
+/// Relay a WebRTC signaling envelope to its target device. The server forwards
+/// `data` verbatim and never inspects it (media is P2P/DTLS-SRTP; this preserves
+/// the §5 crypto boundary, same discipline as MLS ciphertext relay).
+async fn handle_voice_signal(
+    store: &dyn Store,
+    hub: &Hub,
+    user_id: Uuid,
+    device_id: Uuid,
+    mut signal: VoiceSignal,
+) -> Result<(), ServerError> {
+    let group_id = require_group_id(&signal.group_id)?;
+    if !store.is_member(group_id, user_id).await? {
+        return Err(ServerError::PermissionDenied);
+    }
+    let Some(target) = signal
+        .target_device
+        .as_ref()
+        .and_then(|d| Uuid::parse_str(&d.value).ok())
+    else {
+        return Err(ServerError::InvalidArgument(
+            "voice signal needs a target_device".into(),
+        ));
+    };
+    // Stamp the sender so the recipient knows who to answer.
+    signal.from_device = Some(DeviceId {
+        value: device_id.to_string(),
+    });
+    hub.send_to_device(
+        target,
+        ServerMessage {
+            payload: Some(ServerPayload::VoiceSignal(signal)),
+        },
+    );
+    Ok(())
+}
+
+/// Apply a device's voice join/leave/mute state and fan the change out to the
+/// voice channel. On join, also bursts the current participant list back to the
+/// newcomer so it can begin WebRTC negotiation with existing peers.
+async fn handle_voice_state(
+    store: &dyn Store,
+    hub: &Hub,
+    user_id: Uuid,
+    device_id: Uuid,
+    update: VoiceStateUpdate,
+) -> Result<(), ServerError> {
+    let group_id = require_group_id(&update.group_id)?;
+    if !store.is_member(group_id, user_id).await? {
+        return Err(ServerError::PermissionDenied);
+    }
+    let state = VoiceState {
+        user_id,
+        muted: update.muted,
+        camera_on: update.camera_on,
+        screen_on: update.screen_on,
+    };
+    if update.joined {
+        let participants = hub.voice_join(group_id, device_id, state);
+        // Tell the channel this device joined / updated its state.
+        hub.publish_voice_participant(
+            group_id,
+            voice_participant_msg(group_id, device_id, &state, true),
+        );
+        // Burst the existing participants to the newcomer (exclude self).
+        for (dev, st) in participants {
+            if dev != device_id {
+                hub.send_to_device(device_id, voice_participant_msg(group_id, dev, &st, true));
+            }
+        }
+    } else {
+        hub.voice_leave(group_id, device_id);
+        hub.publish_voice_participant(
+            group_id,
+            voice_participant_msg(group_id, device_id, &state, false),
+        );
+    }
+    Ok(())
 }
 
 /// Persist + fan out a public chat message.

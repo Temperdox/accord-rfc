@@ -49,24 +49,32 @@ pub async fn host_public_server(app: AppHandle) -> Result<HostInfo, String> {
     Ok(HostInfo { endpoint, cert })
 }
 
-/// Owner-only: mint an invite token and wrap it (with the server address + mesh
-/// peers) into an opaque, shareable invite key. Each call mints a fresh token
-/// (foundation for rotation / TTL invites).
+/// Mint an invite token for a tavern the caller hosts (their home node, or a
+/// tavern they created — both are local in-process instances on this machine),
+/// and wrap it into an opaque, shareable invite key. `server_id` is the rail id
+/// of the tavern to invite to (e.g. `"home"` or a created tavern's id). Each call
+/// mints a fresh token. The server gates `CreateInvite` on CREATE_INVITE, so a
+/// non-owner / guest session is rejected there.
 #[tauri::command]
 pub async fn create_invite_key(
     app: AppHandle,
     state: State<'_, SharedSessions>,
+    server_id: String,
 ) -> Result<String, String> {
-    // The key embeds the embedded host's address, so it is always a HOME-server
-    // invite: mint with the home session, never whatever happens to be active
-    // (which could be a dm: guest session on someone else's host).
-    let (channel, token) = {
+    // Mint on the TARGET tavern's session (channel/token/cert/endpoint), so the
+    // key points at that specific tavern's instance — not a hardcoded home node.
+    let (channel, token, cert, endpoint) = {
         let sessions = state.lock().await;
-        sessions
+        let s = sessions
             .map
-            .get("home")
-            .and_then(|s| Some((s.channel.clone()?, s.token.clone()?)))
-            .ok_or("not signed in to your home server")?
+            .get(&server_id)
+            .ok_or("not signed in to that tavern")?;
+        (
+            s.channel.clone().ok_or("tavern is not connected")?,
+            s.token.clone().ok_or("not signed in to that tavern")?,
+            s.cert.clone(),
+            s.endpoint.clone().ok_or("tavern has no endpoint")?,
+        )
     };
     let invite = AuthServiceClient::new(channel)
         .create_invite(authed(Request::new(CreateInviteRequest {}), &token)?)
@@ -75,23 +83,26 @@ pub async fn create_invite_key(
         .into_inner()
         .token;
 
-    // The server's TLS cert (if any) is embedded so the joiner pins it.
-    let cert = hosting::host_cert(&app).await;
-
-    // Prefer the mesh address (internet-reachable) when the mesh is up; else the
-    // shareable LAN address from the embedded host.
+    // The tavern's port is its own (each instance binds a distinct port); the
+    // shareable host is this machine's LAN ip (others can't reach 127.0.0.1). The
+    // pinned TLS cert (if any) came from this session's connect.
+    let port = parse_port(&endpoint).ok_or("could not determine the tavern's port")?;
     let key = if let Some(mesh_addr) = mesh::current_address(&app).await {
-        let (_, port, _) = hosting::shareable(&app)
-            .await
-            .ok_or("not hosting a server")?;
+        // Same node over the mesh, at this tavern's port.
         InviteKey::mesh(mesh_addr, port, invite, configured_mesh_peers()).with_cert(cert)
     } else {
-        let (host, port, _) = hosting::shareable(&app)
-            .await
-            .ok_or("not hosting a server")?;
+        let host = local_ip_address::local_ip()
+            .map(|ip| ip.to_string())
+            .map_err(|e| format!("could not determine LAN address: {e}"))?;
         InviteKey::direct(host, port, invite).with_cert(cert)
     };
     Ok(key.encode())
+}
+
+/// Extract the port from a `scheme://host:port` endpoint (the host's own
+/// loopback endpoint carries its real bind port).
+fn parse_port(endpoint: &str) -> Option<u16> {
+    endpoint.trim_end_matches('/').rsplit(':').next()?.parse().ok()
 }
 
 /// Decoded invite info handed to the frontend to drive the join flow.
@@ -153,5 +164,19 @@ fn configured_mesh_peers() -> Vec<String> {
         mesh::default_peers()
     } else {
         from_env
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::parse_port;
+
+    #[test]
+    fn parses_endpoint_port() {
+        assert_eq!(parse_port("https://127.0.0.1:50052"), Some(50052));
+        assert_eq!(parse_port("http://127.0.0.1:50051/"), Some(50051));
+        assert_eq!(parse_port("https://192.168.1.5:50099"), Some(50099));
+        assert_eq!(parse_port("not-an-endpoint"), None);
+        assert_eq!(parse_port("https://host:notaport"), None);
     }
 }

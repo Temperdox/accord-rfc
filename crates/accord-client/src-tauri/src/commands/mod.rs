@@ -12,3 +12,4 @@ pub mod friends;
 pub mod messaging;
 pub mod mls;
 pub mod server;
+pub mod voice;

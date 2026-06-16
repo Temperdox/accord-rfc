@@ -480,14 +480,21 @@ impl Store for PostgresStore {
         Ok(())
     }
 
-    async fn create_public_group(&self, name: &str, description: &str) -> ServerResult<Uuid> {
+    async fn create_public_group(
+        &self,
+        name: &str,
+        description: &str,
+        channel_kind: &str,
+    ) -> ServerResult<Uuid> {
         let id = Uuid::now_v7();
         sqlx::query(
-            "INSERT INTO groups (id, name, description, kind) VALUES ($1, $2, $3, 'public')",
+            "INSERT INTO groups (id, name, description, kind, channel_kind)
+             VALUES ($1, $2, $3, 'public', $4)",
         )
         .bind(id)
         .bind(name)
         .bind(description)
+        .bind(channel_kind)
         .execute(&self.pool)
         .await?;
         Ok(id)
@@ -523,6 +530,23 @@ impl Store for PostgresStore {
         Ok(())
     }
 
+    async fn remove_member(&self, group_id: Uuid, user_id: Uuid) -> ServerResult<()> {
+        sqlx::query("DELETE FROM group_members WHERE group_id = $1 AND user_id = $2")
+            .bind(group_id)
+            .bind(user_id)
+            .execute(&self.pool)
+            .await?;
+        Ok(())
+    }
+
+    async fn delete_group(&self, group_id: Uuid) -> ServerResult<()> {
+        sqlx::query("DELETE FROM groups WHERE id = $1")
+            .bind(group_id)
+            .execute(&self.pool)
+            .await?;
+        Ok(())
+    }
+
     async fn is_member(&self, group_id: Uuid, user_id: Uuid) -> ServerResult<bool> {
         let exists: Option<(i32,)> =
             sqlx::query_as("SELECT 1 FROM group_members WHERE group_id = $1 AND user_id = $2")
@@ -544,7 +568,7 @@ impl Store for PostgresStore {
 
     async fn list_groups_for_user(&self, user_id: Uuid) -> ServerResult<Vec<GroupSummaryRow>> {
         Ok(sqlx::query_as::<_, GroupSummaryRow>(
-            "SELECT g.id, g.name, g.description, g.kind,
+            "SELECT g.id, g.name, g.description, g.kind, g.channel_kind,
                     (SELECT count(*) FROM group_members m2 WHERE m2.group_id = g.id) AS member_count
              FROM groups g
              JOIN group_members m ON m.group_id = g.id
@@ -558,7 +582,7 @@ impl Store for PostgresStore {
 
     async fn get_group(&self, group_id: Uuid) -> ServerResult<GroupSummaryRow> {
         sqlx::query_as::<_, GroupSummaryRow>(
-            "SELECT g.id, g.name, g.description, g.kind,
+            "SELECT g.id, g.name, g.description, g.kind, g.channel_kind,
                     (SELECT count(*) FROM group_members m2 WHERE m2.group_id = g.id) AS member_count
              FROM groups g WHERE g.id = $1",
         )
@@ -584,6 +608,201 @@ impl Store for PostgresStore {
              WHERE gm.group_id = $1 AND d.revoked_at IS NULL",
         )
         .bind(group_id)
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows.into_iter().map(|(id,)| id).collect())
+    }
+
+    async fn device_ids_for_user(&self, user_id: Uuid) -> ServerResult<Vec<Uuid>> {
+        let rows: Vec<(Uuid,)> = sqlx::query_as(
+            "SELECT id FROM devices WHERE user_id = $1 AND revoked_at IS NULL",
+        )
+        .bind(user_id)
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows.into_iter().map(|(id,)| id).collect())
+    }
+
+    async fn list_members(&self, group_id: Uuid) -> ServerResult<Vec<MemberRow>> {
+        let rows: Vec<(Uuid, String, String, bool)> = sqlx::query_as(
+            "SELECT u.id, u.username, u.display_name, u.is_owner
+             FROM users u JOIN group_members gm ON gm.user_id = u.id
+             WHERE gm.group_id = $1
+             ORDER BY u.display_name",
+        )
+        .bind(group_id)
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows
+            .into_iter()
+            .map(|(user_id, username, display_name, is_owner)| MemberRow {
+                user_id,
+                username,
+                display_name,
+                is_owner,
+            })
+            .collect())
+    }
+
+    async fn ensure_tavern(&self, id: Uuid) -> ServerResult<()> {
+        sqlx::query("INSERT INTO tavern_info (id) VALUES ($1) ON CONFLICT (id) DO NOTHING")
+            .bind(id)
+            .execute(&self.pool)
+            .await?;
+        Ok(())
+    }
+
+    async fn get_tavern(&self) -> ServerResult<TavernRow> {
+        let row: Option<(String, String, String, bool)> = sqlx::query_as(
+            "SELECT name, icon_url, description, linking_enabled FROM tavern_info LIMIT 1",
+        )
+        .fetch_optional(&self.pool)
+        .await?;
+        Ok(row
+            .map(
+                |(name, icon_url, description, linking_enabled)| TavernRow {
+                    name,
+                    icon_url,
+                    description,
+                    linking_enabled,
+                },
+            )
+            .unwrap_or(TavernRow {
+                name: String::new(),
+                icon_url: String::new(),
+                description: String::new(),
+                linking_enabled: false,
+            }))
+    }
+
+    async fn upsert_tavern(
+        &self,
+        id: Uuid,
+        name: &str,
+        icon_url: &str,
+        description: &str,
+    ) -> ServerResult<()> {
+        sqlx::query(
+            "INSERT INTO tavern_info (id, name, icon_url, description) VALUES ($1, $2, $3, $4)
+             ON CONFLICT (id) DO UPDATE
+             SET name = EXCLUDED.name, icon_url = EXCLUDED.icon_url,
+                 description = EXCLUDED.description",
+        )
+        .bind(id)
+        .bind(name)
+        .bind(icon_url)
+        .bind(description)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    async fn ban_user(&self, user_id: Uuid, banned_by: Uuid, reason: &str) -> ServerResult<()> {
+        sqlx::query(
+            "INSERT INTO bans (user_id, banned_by, reason) VALUES ($1, $2, $3)
+             ON CONFLICT (user_id) DO UPDATE
+             SET banned_by = EXCLUDED.banned_by, reason = EXCLUDED.reason",
+        )
+        .bind(user_id)
+        .bind(banned_by)
+        .bind(reason)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    async fn unban_user(&self, user_id: Uuid) -> ServerResult<()> {
+        sqlx::query("DELETE FROM bans WHERE user_id = $1")
+            .bind(user_id)
+            .execute(&self.pool)
+            .await?;
+        Ok(())
+    }
+
+    async fn is_banned(&self, user_id: Uuid) -> ServerResult<bool> {
+        let exists: Option<(i32,)> = sqlx::query_as("SELECT 1 FROM bans WHERE user_id = $1")
+            .bind(user_id)
+            .fetch_optional(&self.pool)
+            .await?;
+        Ok(exists.is_some())
+    }
+
+    async fn list_bans(&self) -> ServerResult<Vec<BanRow>> {
+        let rows: Vec<(Uuid, String, Uuid, DateTime<Utc>)> = sqlx::query_as(
+            "SELECT user_id, reason, banned_by, created_at FROM bans ORDER BY created_at DESC",
+        )
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows
+            .into_iter()
+            .map(|(user_id, reason, banned_by, created_at)| BanRow {
+                user_id,
+                reason,
+                banned_by,
+                created_at_ms: created_at.timestamp_millis(),
+            })
+            .collect())
+    }
+
+    async fn record_audit(
+        &self,
+        actor_id: Uuid,
+        action: &str,
+        target: &str,
+        verdict: &str,
+        reason: &str,
+    ) -> ServerResult<()> {
+        sqlx::query(
+            "INSERT INTO audit_log (id, actor_id, action, target, verdict, reason)
+             VALUES ($1, $2, $3, $4, $5, $6)",
+        )
+        .bind(Uuid::now_v7())
+        .bind(actor_id)
+        .bind(action)
+        .bind(target)
+        .bind(verdict)
+        .bind(reason)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    async fn list_audit(&self, limit: i64) -> ServerResult<Vec<AuditRow>> {
+        let rows: Vec<(Uuid, String, String, String, String, DateTime<Utc>)> = sqlx::query_as(
+            "SELECT actor_id, action, target, verdict, reason, created_at
+             FROM audit_log ORDER BY created_at DESC LIMIT $1",
+        )
+        .bind(limit)
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows
+            .into_iter()
+            .map(
+                |(actor_id, action, target, verdict, reason, created_at)| AuditRow {
+                    actor_id,
+                    action,
+                    target,
+                    verdict,
+                    reason,
+                    created_at_ms: created_at.timestamp_millis(),
+                },
+            )
+            .collect())
+    }
+
+    async fn admin_device_ids(&self, perm_mask: i64) -> ServerResult<Vec<Uuid>> {
+        let rows: Vec<(Uuid,)> = sqlx::query_as(
+            "SELECT DISTINCT d.id FROM devices d
+             WHERE d.revoked_at IS NULL AND (
+                 (SELECT is_owner FROM users u WHERE u.id = d.user_id) = TRUE
+                 OR d.user_id IN (
+                     SELECT mr.user_id FROM member_roles mr
+                     JOIN roles r ON r.id = mr.role_id
+                     WHERE (r.permissions & $1) <> 0
+                 )
+             )",
+        )
+        .bind(perm_mask)
         .fetch_all(&self.pool)
         .await?;
         Ok(rows.into_iter().map(|(id,)| id).collect())

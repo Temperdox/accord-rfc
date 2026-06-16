@@ -20,8 +20,8 @@ use std::sync::Mutex;
 
 use accord_proto::server_message::Payload;
 use accord_proto::{
-    GroupId, IncomingPrivateMessage, IncomingPublicMessage, MessageId, MlsCommitNotification,
-    MlsWelcomeNotification, ServerMessage, UserId,
+    DeviceId, GroupId, IncomingPrivateMessage, IncomingPublicMessage, MessageId,
+    MlsCommitNotification, MlsWelcomeNotification, ModAlert, ServerMessage, UserId, VoiceParticipant,
 };
 use futures::StreamExt;
 use redis::AsyncCommands;
@@ -146,6 +146,33 @@ pub fn welcome_notification(group_id: &str, welcome: Vec<u8>) -> ServerMessage {
     }
 }
 
+/// Build a `VoiceParticipant` `ServerMessage` for a device's state in a channel.
+#[must_use]
+pub fn voice_participant_msg(
+    group: Uuid,
+    device: Uuid,
+    state: &VoiceState,
+    joined: bool,
+) -> ServerMessage {
+    ServerMessage {
+        payload: Some(Payload::VoiceParticipant(VoiceParticipant {
+            group_id: Some(GroupId {
+                value: group.to_string(),
+            }),
+            user_id: Some(UserId {
+                value: state.user_id.to_string(),
+            }),
+            device_id: Some(DeviceId {
+                value: device.to_string(),
+            }),
+            joined,
+            muted: state.muted,
+            camera_on: state.camera_on,
+            screen_on: state.screen_on,
+        })),
+    }
+}
+
 /// Build a Commit-notification `ServerMessage`.
 #[must_use]
 pub fn commit_notification(group_id: &str, commit: Vec<u8>, epoch: u64) -> ServerMessage {
@@ -210,6 +237,18 @@ struct Registry {
     device_groups: HashMap<Uuid, Vec<Uuid>>,
 }
 
+/// A device's voice state in a voice channel (scaffold; media is P2P in the
+/// client). Tracked in-memory per instance — single-instance only, like the
+/// dynamic `subscribe`/`is_connected` machinery above. Cross-instance voice
+/// presence would propagate over the bus, deferred.
+#[derive(Debug, Clone, Copy)]
+pub struct VoiceState {
+    pub user_id: Uuid,
+    pub muted: bool,
+    pub camera_on: bool,
+    pub screen_on: bool,
+}
+
 /// How the hub fans messages out to other server instances.
 enum Transport {
     /// Cross-instance fan-out via Redis pub/sub (platform deployments).
@@ -226,6 +265,8 @@ enum Transport {
 pub struct Hub {
     registry: Mutex<Registry>,
     transport: Transport,
+    /// Voice channel participants: group -> (device -> state). Single-instance.
+    voice: Mutex<HashMap<Uuid, HashMap<Uuid, VoiceState>>>,
 }
 
 impl std::fmt::Debug for Hub {
@@ -253,6 +294,7 @@ impl Hub {
         Ok(Arc::new(Self {
             registry: Mutex::new(Registry::default()),
             transport,
+            voice: Mutex::new(HashMap::new()),
         }))
     }
 
@@ -277,19 +319,25 @@ impl Hub {
         rx
     }
 
-    /// Remove a device from all routing tables.
+    /// Remove a device from all routing tables (and any voice channels).
     pub fn unregister(&self, device: Uuid) {
-        let mut reg = self.registry.lock().expect("hub registry poisoned");
-        reg.device_subs.remove(&device);
-        if let Some(groups) = reg.device_groups.remove(&device) {
-            for group in groups {
-                if let Some(members) = reg.group_subs.get_mut(&group) {
-                    members.remove(&device);
-                    if members.is_empty() {
-                        reg.group_subs.remove(&group);
+        {
+            let mut reg = self.registry.lock().expect("hub registry poisoned");
+            reg.device_subs.remove(&device);
+            if let Some(groups) = reg.device_groups.remove(&device) {
+                for group in groups {
+                    if let Some(members) = reg.group_subs.get_mut(&group) {
+                        members.remove(&device);
+                        if members.is_empty() {
+                            reg.group_subs.remove(&group);
+                        }
                     }
                 }
             }
+        }
+        // A disconnect leaves any voice channels the device was in; notify peers.
+        for (group, state) in self.voice_drop_device(device) {
+            self.publish_voice_participant(group, voice_participant_msg(group, device, &state, false));
         }
     }
 
@@ -336,6 +384,71 @@ impl Hub {
         let reg = self.registry.lock().expect("hub registry poisoned");
         if let Some(sender) = reg.device_subs.get(&device) {
             let _ = sender.try_send(Ok(message));
+        }
+    }
+
+    // --- voice (scaffold, single-instance) ----------------------------------
+
+    /// Record/refresh a device's voice state in a channel and return the full
+    /// participant list afterwards (so the caller can burst it to the newcomer).
+    pub fn voice_join(&self, group: Uuid, device: Uuid, state: VoiceState) -> Vec<(Uuid, VoiceState)> {
+        let mut voice = self.voice.lock().expect("hub voice poisoned");
+        let members = voice.entry(group).or_default();
+        members.insert(device, state);
+        members.iter().map(|(d, s)| (*d, *s)).collect()
+    }
+
+    /// Update a device's voice state in a channel (no-op if not present).
+    pub fn voice_set_state(&self, group: Uuid, device: Uuid, state: VoiceState) {
+        let mut voice = self.voice.lock().expect("hub voice poisoned");
+        if let Some(members) = voice.get_mut(&group) {
+            if let Some(slot) = members.get_mut(&device) {
+                *slot = state;
+            }
+        }
+    }
+
+    /// Remove a device from a voice channel. Returns its last state if present.
+    pub fn voice_leave(&self, group: Uuid, device: Uuid) -> Option<VoiceState> {
+        let mut voice = self.voice.lock().expect("hub voice poisoned");
+        let members = voice.get_mut(&group)?;
+        let state = members.remove(&device);
+        if members.is_empty() {
+            voice.remove(&group);
+        }
+        state
+    }
+
+    /// Remove a device from every voice channel (on disconnect). Returns the
+    /// `(group, last_state)` pairs it was in.
+    fn voice_drop_device(&self, device: Uuid) -> Vec<(Uuid, VoiceState)> {
+        let mut voice = self.voice.lock().expect("hub voice poisoned");
+        let mut left = Vec::new();
+        voice.retain(|group, members| {
+            if let Some(state) = members.remove(&device) {
+                left.push((*group, state));
+            }
+            !members.is_empty()
+        });
+        left
+    }
+
+    /// Fan a `VoiceParticipant` update out to a voice channel's members
+    /// (single-instance: routed directly to local subscribers).
+    pub fn publish_voice_participant(&self, group: Uuid, message: ServerMessage) {
+        self.deliver_to_group(group, &message, None);
+    }
+
+    /// Deliver a `ModAlert` to each of `devices` that is connected here.
+    pub fn send_mod_alert(&self, devices: &[Uuid], alert: ModAlert) {
+        let msg = ServerMessage {
+            payload: Some(Payload::ModAlert(alert)),
+        };
+        let reg = self.registry.lock().expect("hub registry poisoned");
+        for device in devices {
+            if let Some(sender) = reg.device_subs.get(device) {
+                let _ = sender.try_send(Ok(msg.clone()));
+            }
         }
     }
 

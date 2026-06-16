@@ -26,8 +26,54 @@ pub struct GroupSummaryRow {
     pub id: Uuid,
     pub name: String,
     pub description: String,
+    /// Encryption model: `"public"` | `"private"` (maps to `ChatKind`).
     pub kind: String,
+    /// Channel behaviour: `"text"` | `"voice"` (orthogonal to `kind`).
+    pub channel_kind: String,
     pub member_count: i64,
+}
+
+/// A channel/server member with the bits the member list needs. Built by hand in
+/// each store impl (no `FromRow`); RBAC role ids + online status are layered on
+/// in the service (per-member `roles_for_user` + hub liveness).
+#[derive(Debug, Clone)]
+pub struct MemberRow {
+    pub user_id: Uuid,
+    pub username: String,
+    pub display_name: String,
+    /// The server owner flag (`users.is_owner`), not the per-group role string.
+    pub is_owner: bool,
+}
+
+/// The single server-level tavern identity row.
+#[derive(Debug, Clone)]
+pub struct TavernRow {
+    pub name: String,
+    pub icon_url: String,
+    pub description: String,
+    /// BAN-PLAN.md Layer-2 per-server account-linking toggle (placeholder).
+    pub linking_enabled: bool,
+}
+
+/// A persistent ban (account-level). `ban_tag_commitment` (BAN-PLAN.md Layer 2)
+/// is not surfaced here yet — the working subset is account-id bans.
+#[derive(Debug, Clone)]
+pub struct BanRow {
+    pub user_id: Uuid,
+    pub reason: String,
+    pub banned_by: Uuid,
+    pub created_at_ms: i64,
+}
+
+/// A guardrail audit-log entry (sensitive/throttled/denied action).
+#[derive(Debug, Clone)]
+pub struct AuditRow {
+    pub actor_id: Uuid,
+    pub action: String,
+    pub target: String,
+    pub verdict: String,
+    pub reason: String,
+    pub created_at_ms: i64,
 }
 
 /// A stored public (plaintext) message joined with the sender's display name.

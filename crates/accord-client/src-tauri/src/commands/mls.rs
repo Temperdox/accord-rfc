@@ -387,6 +387,7 @@ async fn find_existing_dm(
                 id: group_id,
                 name: peer_name.to_owned(),
                 kind: "private".into(),
+                channel_kind: "text".into(),
                 member_count: 2,
             });
         }
@@ -523,6 +524,7 @@ async fn create_dm_with(
         id: group_id,
         name: peer_display.to_owned(),
         kind: "private".into(),
+        channel_kind: "text".into(),
         member_count: 2,
     })
 }

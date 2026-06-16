@@ -73,7 +73,7 @@ impl FriendService for FriendSvc {
             return Err(ServerError::InvalidArgument("contact code too large".into()).into());
         }
         // The code must decode and carry a sane identity key; the key doubles as
-        // the dedupe handle so a sender can't park unlimited copies.
+        // the dedupe handle, so a sender can't park unlimited copies.
         let parsed = ContactCode::decode(&req.contact_code)
             .map_err(|e| ServerError::InvalidArgument(format!("bad contact code: {e}")))?;
         if parsed.identity_pubkey.len() != 32 {

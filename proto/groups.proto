@@ -24,11 +24,26 @@ service GroupService {
   rpc RemoveMembers(RemoveMembersRequest) returns (RemoveMembersResponse);
   rpc ListGroups(ListGroupsRequest) returns (ListGroupsResponse);
   rpc GetGroupInfo(GetGroupInfoRequest) returns (GetGroupInfoResponse);
+  // Tavern (server) administration. See groups/service.rs; gated by RBAC perms
+  // and the guardrail/auto-mod layer (rate-limit + audit + alert).
+  rpc DeleteGroup(DeleteGroupRequest) returns (DeleteGroupResponse);
+  rpc ListMembers(ListMembersRequest) returns (ListMembersResponse);
+  rpc GetTavern(GetTavernRequest) returns (TavernInfo);
+  rpc UpdateTavern(UpdateTavernRequest) returns (TavernInfo);
+  // Moderation. Kick = remove membership; Ban = kick + a persistent bans row
+  // (account-level now; the cryptographic ban-tag is a later layer, BAN-PLAN.md).
+  rpc KickMember(KickMemberRequest) returns (KickMemberResponse);
+  rpc BanMember(BanMemberRequest) returns (BanMemberResponse);
+  rpc UnbanMember(UnbanMemberRequest) returns (UnbanMemberResponse);
+  rpc ListBans(ListBansRequest) returns (ListBansResponse);
 }
 
 message CreatePublicGroupRequest {
   string name = 1;
   string description = 2;
+  // "text" (default) or "voice". Distinct from ChatKind (public/private), which
+  // is the *encryption* model; channel_kind is the channel's *behaviour*.
+  string channel_kind = 3;
 }
 
 message CreatePrivateGroupRequest {
@@ -73,6 +88,8 @@ message GroupSummary {
   string name = 2;
   ChatKind kind = 3;
   uint32 member_count = 4;
+  // "text" or "voice" (see CreatePublicGroupRequest.channel_kind).
+  string channel_kind = 5;
 }
 
 message GetGroupInfoRequest {
@@ -83,4 +100,83 @@ message GetGroupInfoResponse {
   GroupSummary summary = 1;
   string description = 2;
   repeated UserId member_ids = 3;
+}
+
+// ---- Channel deletion ------------------------------------------------------
+
+message DeleteGroupRequest {
+  GroupId group_id = 1;
+}
+message DeleteGroupResponse {}
+
+// ---- Member listing --------------------------------------------------------
+
+message ListMembersRequest {
+  GroupId group_id = 1;
+}
+
+message ListMembersResponse {
+  repeated MemberInfo members = 1;
+}
+
+message MemberInfo {
+  UserId user_id = 1;
+  string username = 2;
+  string display_name = 3;
+  bool is_owner = 4;
+  // Best-effort: at least one of the member's devices has a live stream open.
+  bool online = 5;
+  // Role ids assigned to this member (decimal-string perms live on the Role).
+  repeated string role_ids = 6;
+}
+
+// ---- Tavern (server) identity ----------------------------------------------
+
+message GetTavernRequest {}
+
+message TavernInfo {
+  string name = 1;
+  string icon_url = 2;
+  string description = 3;
+  // BAN-PLAN.md Layer-2 per-server account-linking toggle. Placeholder for now
+  // (the cryptographic ban-tag system is a later layer); surfaced so the UI and
+  // schema already carry it.
+  bool linking_enabled = 4;
+}
+
+message UpdateTavernRequest {
+  string name = 1;
+  string icon_url = 2;
+  string description = 3;
+}
+
+// ---- Moderation (kick / ban) -----------------------------------------------
+
+message KickMemberRequest {
+  GroupId group_id = 1;
+  UserId user_id = 2;
+}
+message KickMemberResponse {}
+
+message BanMemberRequest {
+  UserId user_id = 1;
+  string reason = 2;
+}
+message BanMemberResponse {}
+
+message UnbanMemberRequest {
+  UserId user_id = 1;
+}
+message UnbanMemberResponse {}
+
+message ListBansRequest {}
+message ListBansResponse {
+  repeated BanInfo bans = 1;
+}
+
+message BanInfo {
+  UserId user_id = 1;
+  string reason = 2;
+  UserId banned_by = 3;
+  int64 created_at_ms = 4;
 }

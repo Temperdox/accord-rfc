@@ -120,9 +120,16 @@ impl AuthService for AuthSvc {
         };
 
         // --- invite gating (private servers) ---
-        // The very first account becomes the server owner and needs no invite.
+        // The very first account becomes the server owner and needs no invite —
+        // but ONLY from loopback. A freshly created/hosted server binds the
+        // network ([::]) before its owner has registered, so without this gate a
+        // remote actor who reaches the port (e.g. port-scanning a just-created
+        // tavern on the LAN/mesh) could win the race and register first, claiming
+        // ownership. The owner always registers from the hosting machine itself
+        // (the embedded host connects over 127.0.0.1), so requiring loopback for
+        // the owner-claim closes that race without affecting legitimate flows.
         let user_count = self.store.count_users().await?;
-        let is_first_user = user_count == 0;
+        let is_first_user = user_count == 0 && is_local;
         // Local (loopback) multi-account creation is capped per device. Remote
         // joiners are gated by invite instead.
         if is_local && self.require_invite && user_count >= MAX_LOCAL_ACCOUNTS {
@@ -201,6 +208,12 @@ impl AuthService for AuthSvc {
 
         if !verify_password(&req.password, &user.password_hash)? {
             return Err(ServerError::Unauthenticated.into());
+        }
+
+        // Banned accounts cannot log in (account-level; the cryptographic ban-tag
+        // that also catches alts/restored backups is a later layer, BAN-PLAN.md).
+        if self.store.is_banned(user.id).await? {
+            return Err(Status::permission_denied("this account is banned"));
         }
 
         let device_name = if req.device_name.trim().is_empty() {

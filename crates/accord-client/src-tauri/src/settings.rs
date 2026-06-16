@@ -54,8 +54,14 @@ pub enum FriendRequestPolicy {
     NoOne,
 }
 
+/// Default number of taverns this client will host at once.
+pub const DEFAULT_MAX_HOSTED_TAVERNS: u32 = 16;
+fn default_max_hosted_taverns() -> u32 {
+    DEFAULT_MAX_HOSTED_TAVERNS
+}
+
 /// Persisted client settings.
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Settings {
     /// Encrypt my own messages at rest (received messages are always encrypted).
@@ -78,6 +84,25 @@ pub struct Settings {
     /// User-hosted peer URIs (used when `ygg_peer_mode` is `Private`).
     #[serde(default)]
     pub ygg_private_peers: Vec<String>,
+    /// Max number of taverns this client will host at once. Each hosted tavern
+    /// uses a TCP port from 50052 upward, so raising this consumes more ports and
+    /// may collide with other software (the UI warns about this).
+    #[serde(default = "default_max_hosted_taverns")]
+    pub max_hosted_taverns: u32,
+}
+
+impl Default for Settings {
+    fn default() -> Self {
+        Self {
+            encrypt_at_rest: false,
+            friend_request_policy: FriendRequestPolicy::default(),
+            mesh_enabled: false,
+            rendezvous_node: None,
+            ygg_peer_mode: YggPeerMode::default(),
+            ygg_private_peers: Vec::new(),
+            max_hosted_taverns: DEFAULT_MAX_HOSTED_TAVERNS,
+        }
+    }
 }
 
 /// Snapshot of the Yggdrasil peer config (mode + private peers).
@@ -215,6 +240,30 @@ pub fn set_friend_request_policy(
         .lock()
         .map_err(|_| "settings lock poisoned".to_owned())?
         .friend_request_policy = policy;
+    persist(&app, &state)
+}
+
+/// Max taverns this client will host at once (cheap, synchronous).
+#[must_use]
+pub fn max_hosted_taverns(app: &AppHandle) -> u32 {
+    app.state::<SharedSettings>()
+        .lock()
+        .map(|s| s.max_hosted_taverns)
+        .unwrap_or(DEFAULT_MAX_HOSTED_TAVERNS)
+}
+
+/// Set the max number of hosted taverns and persist it. Clamped to a sane range;
+/// the UI warns that higher values consume more ports (50052+).
+#[tauri::command]
+pub fn set_max_hosted_taverns(
+    app: AppHandle,
+    state: State<'_, SharedSettings>,
+    max: u32,
+) -> Result<(), String> {
+    state
+        .lock()
+        .map_err(|_| "settings lock poisoned".to_owned())?
+        .max_hosted_taverns = max.clamp(1, 200);
     persist(&app, &state)
 }
 

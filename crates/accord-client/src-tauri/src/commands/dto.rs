@@ -20,7 +20,92 @@ pub struct GroupDto {
     pub id: String,
     pub name: String,
     pub kind: String,
+    /// "text" or "voice" (public channels). Empty/"" treated as text by the UI.
+    pub channel_kind: String,
     pub member_count: u32,
+}
+
+/// A tavern (server) member for the member-list panel.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MemberDto {
+    pub user_id: String,
+    pub username: String,
+    pub display_name: String,
+    pub is_owner: bool,
+    pub online: bool,
+    pub role_ids: Vec<String>,
+}
+
+/// Tavern (server) identity for the header + settings modal.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TavernDto {
+    pub name: String,
+    pub icon_url: String,
+    pub description: String,
+    pub linking_enabled: bool,
+}
+
+/// The caller's effective permissions (decimal-string u64) + owner flag, for
+/// gating admin affordances in the UI.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MyPermsDto {
+    pub permissions: String,
+    pub is_owner: bool,
+}
+
+/// A ban entry for the (gated) bans list.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BanDto {
+    pub user_id: String,
+    pub reason: String,
+    pub banned_by: String,
+    pub created_at_ms: i64,
+}
+
+/// Payload of the `voice-participant` event: a participant's voice state changed.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct VoiceParticipantDto {
+    pub server_id: String,
+    pub group_id: String,
+    pub user_id: String,
+    pub device_id: String,
+    pub joined: bool,
+    pub muted: bool,
+    pub camera_on: bool,
+    pub screen_on: bool,
+}
+
+/// Payload of the `voice-signal` event: a relayed WebRTC signaling envelope. The
+/// frontend WebRTC layer consumes these (the body is the future media seam).
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct VoiceSignalDto {
+    pub server_id: String,
+    pub group_id: String,
+    pub from_device: String,
+    /// "offer" | "answer" | "ice" (mapped from SignalKind).
+    pub kind: String,
+    /// Opaque SDP / ICE payload (serialized as a byte array for the JS side).
+    pub data: Vec<u8>,
+}
+
+/// Payload of the `mod-alert` event: a guardrail decision broadcast to admins.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ModAlertDto {
+    pub server_id: String,
+    pub actor_id: String,
+    pub action: String,
+    pub target: String,
+    pub reason: String,
+    /// "info" | "warn" | "hostile".
+    pub severity: String,
+    pub timestamp_ms: i64,
 }
 
 /// Returned from `open_contact_dm`: the DM group plus the (backend) session id of
@@ -63,6 +148,11 @@ impl GroupDto {
             id: s.group_id.map(|g| g.value).unwrap_or_default(),
             name: s.name,
             kind,
+            channel_kind: if s.channel_kind.is_empty() {
+                "text".to_string()
+            } else {
+                s.channel_kind
+            },
             member_count: s.member_count,
         }
     }

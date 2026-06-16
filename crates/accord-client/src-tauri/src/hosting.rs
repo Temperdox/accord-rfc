@@ -241,7 +241,10 @@ async fn start_inner(
 /// `err_rx` carries the server task's startup failure: when the server dies
 /// before listening (e.g. a migration error), this returns the REAL cause
 /// immediately instead of a generic timeout 10 seconds later.
-async fn wait_until_listening(port: u16, mut err_rx: oneshot::Receiver<String>) -> Result<(), String> {
+pub(crate) async fn wait_until_listening(
+    port: u16,
+    mut err_rx: oneshot::Receiver<String>,
+) -> Result<(), String> {
     let addr = SocketAddr::from((Ipv4Addr::LOCALHOST, port));
     for _ in 0..200 {
         match err_rx.try_recv() {
@@ -286,7 +289,7 @@ pub async fn stop(app: &AppHandle) -> Result<(), String> {
 /// (encrypted at rest). Every install MUST have its own random secret: a shared
 /// or hardcoded secret would let anyone forge access tokens for any user on any
 /// reachable home server.
-fn load_or_create_jwt_secret(dir: &std::path::Path) -> Result<String, String> {
+pub(crate) fn load_or_create_jwt_secret(dir: &std::path::Path) -> Result<String, String> {
     let path = dir.join("host-jwt.secret");
     if let Ok(bytes) = std::fs::read(&path) {
         if let Some(plaintext) = crate::at_rest::open_bytes(&bytes) {
@@ -313,7 +316,7 @@ fn load_or_create_jwt_secret(dir: &std::path::Path) -> Result<String, String> {
 /// Load the persisted self-signed cert (PEM cert, PEM key), or generate + persist
 /// one. Stable across restarts so a pinned cert in someone's invite key keeps
 /// working.
-fn load_or_create_cert(dir: &std::path::Path) -> Result<(String, String), String> {
+pub(crate) fn load_or_create_cert(dir: &std::path::Path) -> Result<(String, String), String> {
     let cert_path = dir.join("cert.pem");
     let key_path = dir.join("key.pem");
     if let (Ok(cert), Ok(key)) = (

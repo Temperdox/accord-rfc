@@ -558,15 +558,21 @@ impl Store for SqliteStore {
         Ok(())
     }
 
-    async fn create_public_group(&self, name: &str, description: &str) -> ServerResult<Uuid> {
+    async fn create_public_group(
+        &self,
+        name: &str,
+        description: &str,
+        channel_kind: &str,
+    ) -> ServerResult<Uuid> {
         let id = Uuid::now_v7();
         sqlx::query(
-            "INSERT INTO groups (id, name, description, kind, created_at)
-             VALUES (?, ?, ?, 'public', ?)",
+            "INSERT INTO groups (id, name, description, kind, channel_kind, created_at)
+             VALUES (?, ?, ?, 'public', ?, ?)",
         )
         .bind(id.to_string())
         .bind(name)
         .bind(description)
+        .bind(channel_kind)
         .bind(Utc::now().timestamp_millis())
         .execute(&self.pool)
         .await?;
@@ -606,6 +612,32 @@ impl Store for SqliteStore {
         Ok(())
     }
 
+    async fn remove_member(&self, group_id: Uuid, user_id: Uuid) -> ServerResult<()> {
+        sqlx::query("DELETE FROM group_members WHERE group_id = ? AND user_id = ?")
+            .bind(group_id.to_string())
+            .bind(user_id.to_string())
+            .execute(&self.pool)
+            .await?;
+        Ok(())
+    }
+
+    async fn delete_group(&self, group_id: Uuid) -> ServerResult<()> {
+        // SQLite doesn't enforce FKs here (no `PRAGMA foreign_keys`), so the
+        // ON DELETE CASCADE in the schema doesn't fire — delete children first.
+        let gid = group_id.to_string();
+        for table in ["group_members", "public_messages", "private_messages"] {
+            sqlx::query(&format!("DELETE FROM {table} WHERE group_id = ?"))
+                .bind(&gid)
+                .execute(&self.pool)
+                .await?;
+        }
+        sqlx::query("DELETE FROM groups WHERE id = ?")
+            .bind(&gid)
+            .execute(&self.pool)
+            .await?;
+        Ok(())
+    }
+
     async fn is_member(&self, group_id: Uuid, user_id: Uuid) -> ServerResult<bool> {
         let row = sqlx::query("SELECT 1 FROM group_members WHERE group_id = ? AND user_id = ?")
             .bind(group_id.to_string())
@@ -627,7 +659,7 @@ impl Store for SqliteStore {
 
     async fn list_groups_for_user(&self, user_id: Uuid) -> ServerResult<Vec<GroupSummaryRow>> {
         let rows = sqlx::query(
-            "SELECT g.id, g.name, g.description, g.kind,
+            "SELECT g.id, g.name, g.description, g.kind, g.channel_kind,
                     (SELECT count(*) FROM group_members m2 WHERE m2.group_id = g.id) AS member_count
              FROM groups g
              JOIN group_members m ON m.group_id = g.id
@@ -644,6 +676,7 @@ impl Store for SqliteStore {
                     name: r.get("name"),
                     description: r.get("description"),
                     kind: r.get("kind"),
+                    channel_kind: r.get("channel_kind"),
                     member_count: r.get("member_count"),
                 })
             })
@@ -652,7 +685,7 @@ impl Store for SqliteStore {
 
     async fn get_group(&self, group_id: Uuid) -> ServerResult<GroupSummaryRow> {
         let row = sqlx::query(
-            "SELECT g.id, g.name, g.description, g.kind,
+            "SELECT g.id, g.name, g.description, g.kind, g.channel_kind,
                     (SELECT count(*) FROM group_members m2 WHERE m2.group_id = g.id) AS member_count
              FROM groups g WHERE g.id = ?",
         )
@@ -665,6 +698,7 @@ impl Store for SqliteStore {
             name: row.get("name"),
             description: row.get("description"),
             kind: row.get("kind"),
+            channel_kind: row.get("channel_kind"),
             member_count: row.get("member_count"),
         })
     }
@@ -686,6 +720,200 @@ impl Store for SqliteStore {
              WHERE gm.group_id = ? AND d.revoked_at IS NULL",
         )
         .bind(group_id.to_string())
+        .fetch_all(&self.pool)
+        .await?;
+        rows.into_iter().map(|r| parse_id(r.get("id"))).collect()
+    }
+
+    async fn device_ids_for_user(&self, user_id: Uuid) -> ServerResult<Vec<Uuid>> {
+        let rows = sqlx::query("SELECT id FROM devices WHERE user_id = ? AND revoked_at IS NULL")
+            .bind(user_id.to_string())
+            .fetch_all(&self.pool)
+            .await?;
+        rows.into_iter().map(|r| parse_id(r.get("id"))).collect()
+    }
+
+    async fn list_members(&self, group_id: Uuid) -> ServerResult<Vec<MemberRow>> {
+        let rows = sqlx::query(
+            "SELECT u.id, u.username, u.display_name, u.is_owner
+             FROM users u JOIN group_members gm ON gm.user_id = u.id
+             WHERE gm.group_id = ?
+             ORDER BY u.display_name",
+        )
+        .bind(group_id.to_string())
+        .fetch_all(&self.pool)
+        .await?;
+        rows.into_iter()
+            .map(|r| {
+                Ok(MemberRow {
+                    user_id: parse_id(r.get("id"))?,
+                    username: r.get("username"),
+                    display_name: r.get("display_name"),
+                    is_owner: r.get::<i64, _>("is_owner") != 0,
+                })
+            })
+            .collect()
+    }
+
+    async fn ensure_tavern(&self, id: Uuid) -> ServerResult<()> {
+        sqlx::query("INSERT INTO tavern_info (id) VALUES (?) ON CONFLICT (id) DO NOTHING")
+            .bind(id.to_string())
+            .execute(&self.pool)
+            .await?;
+        Ok(())
+    }
+
+    async fn get_tavern(&self) -> ServerResult<TavernRow> {
+        let row = sqlx::query(
+            "SELECT name, icon_url, description, linking_enabled FROM tavern_info LIMIT 1",
+        )
+        .fetch_optional(&self.pool)
+        .await?;
+        Ok(row
+            .map(|r| TavernRow {
+                name: r.get("name"),
+                icon_url: r.get("icon_url"),
+                description: r.get("description"),
+                linking_enabled: r.get::<i64, _>("linking_enabled") != 0,
+            })
+            .unwrap_or(TavernRow {
+                name: String::new(),
+                icon_url: String::new(),
+                description: String::new(),
+                linking_enabled: false,
+            }))
+    }
+
+    async fn upsert_tavern(
+        &self,
+        id: Uuid,
+        name: &str,
+        icon_url: &str,
+        description: &str,
+    ) -> ServerResult<()> {
+        sqlx::query(
+            "INSERT INTO tavern_info (id, name, icon_url, description) VALUES (?, ?, ?, ?)
+             ON CONFLICT (id) DO UPDATE
+             SET name = excluded.name, icon_url = excluded.icon_url,
+                 description = excluded.description",
+        )
+        .bind(id.to_string())
+        .bind(name)
+        .bind(icon_url)
+        .bind(description)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    async fn ban_user(&self, user_id: Uuid, banned_by: Uuid, reason: &str) -> ServerResult<()> {
+        sqlx::query(
+            "INSERT INTO bans (user_id, banned_by, reason, created_at) VALUES (?, ?, ?, ?)
+             ON CONFLICT (user_id) DO UPDATE
+             SET banned_by = excluded.banned_by, reason = excluded.reason",
+        )
+        .bind(user_id.to_string())
+        .bind(banned_by.to_string())
+        .bind(reason)
+        .bind(Utc::now().timestamp_millis())
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    async fn unban_user(&self, user_id: Uuid) -> ServerResult<()> {
+        sqlx::query("DELETE FROM bans WHERE user_id = ?")
+            .bind(user_id.to_string())
+            .execute(&self.pool)
+            .await?;
+        Ok(())
+    }
+
+    async fn is_banned(&self, user_id: Uuid) -> ServerResult<bool> {
+        let row = sqlx::query("SELECT 1 FROM bans WHERE user_id = ?")
+            .bind(user_id.to_string())
+            .fetch_optional(&self.pool)
+            .await?;
+        Ok(row.is_some())
+    }
+
+    async fn list_bans(&self) -> ServerResult<Vec<BanRow>> {
+        let rows = sqlx::query(
+            "SELECT user_id, reason, banned_by, created_at FROM bans ORDER BY created_at DESC",
+        )
+        .fetch_all(&self.pool)
+        .await?;
+        rows.into_iter()
+            .map(|r| {
+                Ok(BanRow {
+                    user_id: parse_id(r.get("user_id"))?,
+                    reason: r.get("reason"),
+                    banned_by: parse_id(r.get("banned_by"))?,
+                    created_at_ms: r.get("created_at"),
+                })
+            })
+            .collect()
+    }
+
+    async fn record_audit(
+        &self,
+        actor_id: Uuid,
+        action: &str,
+        target: &str,
+        verdict: &str,
+        reason: &str,
+    ) -> ServerResult<()> {
+        sqlx::query(
+            "INSERT INTO audit_log (id, actor_id, action, target, verdict, reason, created_at)
+             VALUES (?, ?, ?, ?, ?, ?, ?)",
+        )
+        .bind(Uuid::now_v7().to_string())
+        .bind(actor_id.to_string())
+        .bind(action)
+        .bind(target)
+        .bind(verdict)
+        .bind(reason)
+        .bind(Utc::now().timestamp_millis())
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    async fn list_audit(&self, limit: i64) -> ServerResult<Vec<AuditRow>> {
+        let rows = sqlx::query(
+            "SELECT actor_id, action, target, verdict, reason, created_at
+             FROM audit_log ORDER BY created_at DESC LIMIT ?",
+        )
+        .bind(limit)
+        .fetch_all(&self.pool)
+        .await?;
+        rows.into_iter()
+            .map(|r| {
+                Ok(AuditRow {
+                    actor_id: parse_id(r.get("actor_id"))?,
+                    action: r.get("action"),
+                    target: r.get("target"),
+                    verdict: r.get("verdict"),
+                    reason: r.get("reason"),
+                    created_at_ms: r.get("created_at"),
+                })
+            })
+            .collect()
+    }
+
+    async fn admin_device_ids(&self, perm_mask: i64) -> ServerResult<Vec<Uuid>> {
+        let rows = sqlx::query(
+            "SELECT DISTINCT d.id FROM devices d
+             WHERE d.revoked_at IS NULL AND (
+                 (SELECT is_owner FROM users u WHERE u.id = d.user_id) = 1
+                 OR d.user_id IN (
+                     SELECT mr.user_id FROM member_roles mr
+                     JOIN roles r ON r.id = mr.role_id
+                     WHERE (r.permissions & ?) <> 0
+                 )
+             )",
+        )
+        .bind(perm_mask)
         .fetch_all(&self.pool)
         .await?;
         rows.into_iter().map(|r| parse_id(r.get("id"))).collect()
@@ -1099,6 +1327,88 @@ mod tests {
             err.to_string().contains("modified"),
             "unexpected error: {err}"
         );
+
+        drop(store);
+        let _ = std::fs::remove_file(path);
+    }
+
+    async fn migrated_store() -> (SqliteStore, std::path::PathBuf) {
+        let (store, path) = temp_store().await;
+        store.migrate().await.expect("migrate");
+        (store, path)
+    }
+
+    #[tokio::test]
+    async fn channel_kind_round_trips_and_lists_members() {
+        let (store, path) = migrated_store().await;
+        let owner = store
+            .create_user("alice", "Alice", "hash", true, false, None)
+            .await
+            .expect("user");
+
+        let voice = store
+            .create_public_group("Lounge", "", "voice")
+            .await
+            .expect("voice channel");
+        store.add_member(voice, owner, "owner").await.expect("join");
+
+        let g = store.get_group(voice).await.expect("get");
+        assert_eq!(g.channel_kind, "voice");
+        // A normal text channel (the service normalizes empty -> "text" before
+        // calling the store, which persists the kind verbatim).
+        let text = store.create_public_group("general", "", "text").await.expect("text");
+        assert_eq!(store.get_group(text).await.unwrap().channel_kind, "text");
+
+        let members = store.list_members(voice).await.expect("members");
+        assert_eq!(members.len(), 1);
+        assert_eq!(members[0].user_id, owner);
+        assert!(members[0].is_owner);
+
+        // delete_group removes the group and its membership.
+        store.delete_group(voice).await.expect("delete");
+        assert!(store.get_group(voice).await.is_err());
+        assert!(store.list_members(voice).await.unwrap().is_empty());
+
+        drop(store);
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[tokio::test]
+    async fn tavern_upsert_and_bans_and_audit() {
+        let (store, path) = migrated_store().await;
+        let owner = store
+            .create_user("o", "Owner", "h", true, false, None)
+            .await
+            .unwrap();
+        let target = store
+            .create_user("t", "Target", "h", false, false, None)
+            .await
+            .unwrap();
+        let tavern_id = Uuid::now_v7();
+
+        store.ensure_tavern(tavern_id).await.unwrap();
+        assert_eq!(store.get_tavern().await.unwrap().name, "");
+        store
+            .upsert_tavern(tavern_id, "My Tavern", "icon", "desc")
+            .await
+            .unwrap();
+        let t = store.get_tavern().await.unwrap();
+        assert_eq!((t.name.as_str(), t.icon_url.as_str()), ("My Tavern", "icon"));
+
+        assert!(!store.is_banned(target).await.unwrap());
+        store.ban_user(target, owner, "spam").await.unwrap();
+        assert!(store.is_banned(target).await.unwrap());
+        assert_eq!(store.list_bans().await.unwrap().len(), 1);
+        store.unban_user(target).await.unwrap();
+        assert!(!store.is_banned(target).await.unwrap());
+
+        store
+            .record_audit(owner, "delete_channel", "general", "throttle", "rate-limited")
+            .await
+            .unwrap();
+        let audit = store.list_audit(10).await.unwrap();
+        assert_eq!(audit.len(), 1);
+        assert_eq!(audit[0].action, "delete_channel");
 
         drop(store);
         let _ = std::fs::remove_file(path);

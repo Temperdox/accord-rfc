@@ -23,8 +23,8 @@ use uuid::Uuid;
 
 use crate::error::ServerResult;
 use model::{
-    BackupRow, ClaimedKeyPackage, FriendRequestRow, GroupSummaryRow, InboxRow, PrivateMessageRow,
-    PublicMessageRow, RefreshRow, RoleRow, UserRow,
+    AuditRow, BackupRow, BanRow, ClaimedKeyPackage, FriendRequestRow, GroupSummaryRow, InboxRow,
+    MemberRow, PrivateMessageRow, PublicMessageRow, RefreshRow, RoleRow, TavernRow, UserRow,
 };
 
 /// Most unconsumed KeyPackages kept per device. Clients re-publish a batch on
@@ -151,17 +151,68 @@ pub trait Store: Send + Sync + std::fmt::Debug {
     async fn delete_refresh_token(&self, token: &str) -> ServerResult<()>;
 
     // --- groups ---
-    async fn create_public_group(&self, name: &str, description: &str) -> ServerResult<Uuid>;
+    /// Create a public channel. `channel_kind` is `"text"` or `"voice"`.
+    async fn create_public_group(
+        &self,
+        name: &str,
+        description: &str,
+        channel_kind: &str,
+    ) -> ServerResult<Uuid>;
     async fn create_private_group_with_id(&self, id: Uuid, name: &str) -> ServerResult<()>;
     async fn add_member(&self, group_id: Uuid, user_id: Uuid, role: &str) -> ServerResult<()>;
+    /// Remove one member from a group (kick / self-leave). No-op if not a member.
+    async fn remove_member(&self, group_id: Uuid, user_id: Uuid) -> ServerResult<()>;
+    /// Delete a group and its membership/messages (FK cascade). Public only —
+    /// callers must not route private (MLS) groups here.
+    async fn delete_group(&self, group_id: Uuid) -> ServerResult<()>;
     async fn is_member(&self, group_id: Uuid, user_id: Uuid) -> ServerResult<bool>;
     async fn group_ids_for_user(&self, user_id: Uuid) -> ServerResult<Vec<Uuid>>;
     async fn list_groups_for_user(&self, user_id: Uuid) -> ServerResult<Vec<GroupSummaryRow>>;
     async fn get_group(&self, group_id: Uuid) -> ServerResult<GroupSummaryRow>;
     async fn member_ids(&self, group_id: Uuid) -> ServerResult<Vec<Uuid>>;
+    /// Members of a group with their profile bits + server-owner flag, for the
+    /// member list. RBAC role ids + online status are layered on in the service.
+    async fn list_members(&self, group_id: Uuid) -> ServerResult<Vec<MemberRow>>;
     /// All non-revoked device ids belonging to the members of a group. Used to
     /// queue private messages into offline devices' mailboxes.
     async fn device_ids_for_group(&self, group_id: Uuid) -> ServerResult<Vec<Uuid>>;
+    /// Non-revoked device ids for a single user (for member-list liveness).
+    async fn device_ids_for_user(&self, user_id: Uuid) -> ServerResult<Vec<Uuid>>;
+
+    // --- tavern (server) identity ---
+    /// Create the singleton tavern row with `id` if it doesn't exist (startup).
+    async fn ensure_tavern(&self, id: Uuid) -> ServerResult<()>;
+    /// Fetch the tavern identity row (empty defaults if unset).
+    async fn get_tavern(&self) -> ServerResult<TavernRow>;
+    /// Update the tavern identity fields.
+    async fn upsert_tavern(
+        &self,
+        id: Uuid,
+        name: &str,
+        icon_url: &str,
+        description: &str,
+    ) -> ServerResult<()>;
+
+    // --- moderation (bans + audit) ---
+    /// Ban an account (account-level). Idempotent on `user_id`.
+    async fn ban_user(&self, user_id: Uuid, banned_by: Uuid, reason: &str) -> ServerResult<()>;
+    async fn unban_user(&self, user_id: Uuid) -> ServerResult<()>;
+    async fn is_banned(&self, user_id: Uuid) -> ServerResult<bool>;
+    async fn list_bans(&self) -> ServerResult<Vec<BanRow>>;
+    /// Append a guardrail audit-log entry.
+    async fn record_audit(
+        &self,
+        actor_id: Uuid,
+        action: &str,
+        target: &str,
+        verdict: &str,
+        reason: &str,
+    ) -> ServerResult<()>;
+    /// Most-recent audit entries (newest first), capped at `limit`.
+    async fn list_audit(&self, limit: i64) -> ServerResult<Vec<AuditRow>>;
+    /// Non-revoked device ids of the owner + members holding any of `perm_mask`'s
+    /// permission bits (used to target `ModAlert`s at owner/admins).
+    async fn admin_device_ids(&self, perm_mask: i64) -> ServerResult<Vec<Uuid>>;
 
     // --- public messages ---
     async fn insert_public_message(

@@ -18,6 +18,8 @@ export interface GroupDto {
   id: string;
   name: string;
   kind: string;
+  /** "text" | "voice" for public channels (DMs/private are "text"). */
+  channelKind: string;
   memberCount: number;
 }
 
@@ -292,6 +294,8 @@ export interface Settings {
   rendezvousNode: RendezvousNode | null;
   yggPeerMode: YggPeerMode;
   yggPrivatePeers: string[];
+  /** Max taverns this client will host at once (default 16). */
+  maxHostedTaverns: number;
 }
 
 /** Read the current client settings. */
@@ -309,6 +313,11 @@ export const setFriendRequestPolicy = (policy: FriendRequestPolicy): Promise<voi
 /** Set (or clear with null) the rendezvous node to route DMs through. */
 export const setRendezvousNode = (node: RendezvousNode | null): Promise<void> =>
   invoke("set_rendezvous_node", { node });
+
+/** Set the max number of taverns this client will host at once (clamped 1–200
+ * server-side). Higher values consume more ports starting at 50052. */
+export const setMaxHostedTaverns = (max: number): Promise<void> =>
+  invoke("set_max_hosted_taverns", { max });
 
 /** Start an end-to-end encrypted DM with a user by username. */
 export const startDm = (username: string): Promise<GroupDto> =>
@@ -405,8 +414,10 @@ export const hostPrivateServer = (): Promise<HostInfo> => invoke("host_private_s
 /** Host a new public (open, TLS) server in-process. */
 export const hostPublicServer = (): Promise<HostInfo> => invoke("host_public_server");
 
-/** Owner-only: mint + return a shareable invite key for the hosted server. */
-export const createInviteKey = (): Promise<string> => invoke("create_invite_key");
+/** Mint + return a shareable invite key for the tavern with rail id `serverId`
+ * (the active tavern). Server gates this on CREATE_INVITE. */
+export const createInviteKey = (serverId: string): Promise<string> =>
+  invoke("create_invite_key", { serverId });
 
 /** Decode an invite key into its parts (endpoint, token, transport, peers). */
 export const decodeInvite = (key: string): Promise<InviteInfo> =>
@@ -416,6 +427,27 @@ export const decodeInvite = (key: string): Promise<InviteInfo> =>
 export const prepareMesh = (peers: string[]): Promise<string> =>
   invoke("prepare_mesh", { peers });
 
+// ---- Hosting your own taverns (multi-instance) ------------------------------
+
+/** Connect info for a tavern this client hosts (own in-process server instance). */
+export interface TavernConnect {
+  id: string;
+  name: string;
+  endpoint: string;
+  cert: string | null;
+}
+
+/** Create + host a new PRIVATE tavern (its own server instance: own port, DB,
+ * TLS cert). Returns connect info; the caller then registers (owner) + logs in +
+ * adds it to the rail. Public taverns aren't hostable yet (no central nodes). */
+export const createTavern = (name: string): Promise<TavernConnect> =>
+  invoke("create_tavern", { name });
+
+/** Re-spawn all persisted hosted taverns (called after login); returns the
+ * connect info for each that came back up so the UI can re-attach them. */
+export const resumeHostedTaverns = (): Promise<TavernConnect[]> =>
+  invoke("resume_hosted_taverns");
+
 /**
  * Subscribe to real-time incoming messages pushed from the Rust message stream.
  * Returns an unlisten function to call on cleanup.
@@ -424,3 +456,176 @@ export const onIncomingMessage = (
   handler: (msg: MessageDto) => void
 ): Promise<UnlistenFn> =>
   listen<MessageDto>("incoming-message", (event) => handler(event.payload));
+
+// ---- Taverns: channels, members, identity, moderation ----------------------
+
+/** Permission bits (mirror of accord-types::perms; serialized as decimal u64
+ * strings — we test bits with BigInt). Only the ones the UI gates on. */
+export const PERM = {
+  ADMINISTRATOR: 1n << 0n,
+  MANAGE_CHANNELS: 1n << 4n,
+  MANAGE_ROLES: 1n << 5n,
+  KICK_MEMBERS: 1n << 7n,
+  BAN_MEMBERS: 1n << 8n,
+  MANAGE_SERVER: 1n << 9n,
+};
+
+/** The caller's effective permissions on the active server. */
+export interface MyPerms {
+  permissions: string; // decimal u64
+  isOwner: boolean;
+}
+
+/** Whether `perms` grant `bit` (owner/ADMINISTRATOR short-circuit). */
+export const can = (perms: MyPerms | null, bit: bigint): boolean => {
+  if (!perms) return false;
+  if (perms.isOwner) return true;
+  const p = BigInt(perms.permissions);
+  if (p & PERM.ADMINISTRATOR) return true;
+  return (p & bit) !== 0n;
+};
+
+/** Fetch the caller's effective permissions (gates admin affordances). */
+export const getMyPermissions = (): Promise<MyPerms> => invoke("get_my_permissions");
+
+/** Create a public channel (text or voice). Gated server-side. */
+export const createChannel = (
+  name: string,
+  channelKind: "text" | "voice",
+  description?: string
+): Promise<GroupDto> =>
+  invoke("create_channel", { name, channelKind, description: description ?? "" });
+
+/** Delete a public channel. Gated server-side. */
+export const deleteChannel = (groupId: string): Promise<void> =>
+  invoke("delete_channel", { groupId });
+
+/** A tavern (server) member for the member list. */
+export interface MemberDto {
+  userId: string;
+  username: string;
+  displayName: string;
+  isOwner: boolean;
+  online: boolean;
+  roleIds: string[];
+}
+
+/** List the members of a channel/server. */
+export const listMembers = (groupId: string): Promise<MemberDto[]> =>
+  invoke("list_members", { groupId });
+
+/** Tavern (server) identity. */
+export interface TavernDto {
+  name: string;
+  iconUrl: string;
+  description: string;
+  linkingEnabled: boolean;
+}
+
+/** Fetch the tavern identity. */
+export const getTavern = (): Promise<TavernDto> => invoke("get_tavern");
+
+/** Update the tavern identity (gated by MANAGE_SERVER). */
+export const updateTavern = (
+  name: string,
+  iconUrl?: string,
+  description?: string
+): Promise<TavernDto> =>
+  invoke("update_tavern", { name, iconUrl: iconUrl ?? "", description: description ?? "" });
+
+/** Kick a member from a channel (gated by KICK_MEMBERS). */
+export const kickMember = (groupId: string, userId: string): Promise<void> =>
+  invoke("kick_member", { groupId, userId });
+
+/** Ban an account from the server (gated by BAN_MEMBERS). */
+export const banMember = (userId: string, reason?: string): Promise<void> =>
+  invoke("ban_member", { userId, reason: reason ?? "" });
+
+/** Lift a ban (gated by BAN_MEMBERS). */
+export const unbanMember = (userId: string): Promise<void> =>
+  invoke("unban_member", { userId });
+
+/** A ban entry. */
+export interface BanDto {
+  userId: string;
+  reason: string;
+  bannedBy: string;
+  createdAtMs: number;
+}
+
+/** List the server's bans (gated by BAN_MEMBERS). */
+export const listBans = (): Promise<BanDto[]> => invoke("list_bans");
+
+/** Payload of the `mod-alert` event (guardrail decision shown to admins). */
+export interface ModAlert {
+  serverId: string;
+  actorId: string;
+  action: string;
+  target: string;
+  reason: string;
+  severity: "info" | "warn" | "hostile";
+  timestampMs: number;
+}
+
+/** Subscribe to moderation alerts (owner/admins only receive these). */
+export const onModAlert = (handler: (a: ModAlert) => void): Promise<UnlistenFn> =>
+  listen<ModAlert>("mod-alert", (e) => handler(e.payload));
+
+// ---- Voice/video (scaffold) -------------------------------------------------
+// Media is WebRTC P2P in the webview (src/voice.ts, currently stubbed); these
+// commands carry only signaling over the message stream.
+
+/** Join a voice channel (announces presence; webview then negotiates WebRTC). */
+export const joinVoice = (groupId: string): Promise<void> =>
+  invoke("join_voice", { groupId });
+
+/** Leave a voice channel. */
+export const leaveVoice = (groupId: string): Promise<void> =>
+  invoke("leave_voice", { groupId });
+
+/** Update mic/camera/screen flags while in a voice channel. */
+export const setVoiceState = (
+  groupId: string,
+  muted: boolean,
+  cameraOn: boolean,
+  screenOn: boolean
+): Promise<void> => invoke("set_voice_state", { groupId, muted, cameraOn, screenOn });
+
+/** Relay a WebRTC signaling envelope to a peer device. */
+export const sendVoiceSignal = (
+  groupId: string,
+  targetDevice: string,
+  kind: "offer" | "answer" | "ice",
+  data: number[]
+): Promise<void> => invoke("send_voice_signal", { groupId, targetDevice, kind, data });
+
+/** A voice participant's state change. */
+export interface VoiceParticipant {
+  serverId: string;
+  groupId: string;
+  userId: string;
+  deviceId: string;
+  joined: boolean;
+  muted: boolean;
+  cameraOn: boolean;
+  screenOn: boolean;
+}
+
+/** Subscribe to voice participant updates. */
+export const onVoiceParticipant = (
+  handler: (p: VoiceParticipant) => void
+): Promise<UnlistenFn> =>
+  listen<VoiceParticipant>("voice-participant", (e) => handler(e.payload));
+
+/** A relayed WebRTC signaling envelope. */
+export interface VoiceSignal {
+  serverId: string;
+  groupId: string;
+  fromDevice: string;
+  kind: "offer" | "answer" | "ice" | "unknown";
+  data: number[];
+}
+
+/** Subscribe to relayed voice signaling (consumed by the WebRTC layer). */
+export const onVoiceSignal = (handler: (s: VoiceSignal) => void): Promise<UnlistenFn> =>
+  listen<VoiceSignal>("voice-signal", (e) => handler(e.payload));

@@ -44,12 +44,24 @@ const ELEVATED_MANIFEST: &str = r#"<assembly xmlns="urn:schemas-microsoft-com:as
 </assembly>"#;
 
 fn main() {
-    if std::env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("windows") {
+    // Dev/test escape hatch: when `ACCORD_NO_ELEVATION_MANIFEST` is set, skip the
+    // `requireAdministrator` manifest so the crate's TEST binaries (which inherit
+    // the same manifest and otherwise fail with ERROR_ELEVATION_REQUIRED) run from
+    // a normal, non-elevated shell. The client's non-mesh tests (`taverns_it`,
+    // `peers`) need no privileges — only the manifest forced elevation. It is
+    // UNSET by default, so normal/release builds are unaffected; NEVER set it for
+    // a real build (mesh TUN creation needs the elevated manifest).
+    println!("cargo:rerun-if-env-changed=ACCORD_NO_ELEVATION_MANIFEST");
+    let skip_elevation = std::env::var_os("ACCORD_NO_ELEVATION_MANIFEST").is_some();
+
+    if std::env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("windows") && !skip_elevation {
         let attrs = tauri_build::Attributes::new().windows_attributes(
             tauri_build::WindowsAttributes::new().app_manifest(ELEVATED_MANIFEST),
         );
         tauri_build::try_build(attrs).expect("tauri-build failed");
     } else {
+        // Non-Windows, or the elevation opt-out: Tauri's default manifest
+        // (asInvoker), which launches without UAC.
         tauri_build::build();
     }
     copy_wintun_next_to_binary();
