@@ -50,7 +50,7 @@ pub async fn host_public_server(app: AppHandle) -> Result<HostInfo, String> {
 }
 
 /// Mint an invite token for a tavern the caller hosts (their home node, or a
-/// tavern they created — both are local in-process instances on this machine),
+/// tavern they created - both are local in-process instances on this machine),
 /// and wrap it into an opaque, shareable invite key. `server_id` is the rail id
 /// of the tavern to invite to (e.g. `"home"` or a created tavern's id). Each call
 /// mints a fresh token. The server gates `CreateInvite` on CREATE_INVITE, so a
@@ -62,7 +62,7 @@ pub async fn create_invite_key(
     server_id: String,
 ) -> Result<String, String> {
     // Mint on the TARGET tavern's session (channel/token/cert/endpoint), so the
-    // key points at that specific tavern's instance — not a hardcoded home node.
+    // key points at that specific tavern's instance - not a hardcoded home node.
     let (channel, token, cert, endpoint) = {
         let sessions = state.lock().await;
         let s = sessions

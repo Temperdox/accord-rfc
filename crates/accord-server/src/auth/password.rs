@@ -35,6 +35,11 @@ pub fn hash_password(password: &str) -> ServerResult<String> {
 /// # Errors
 /// Returns [`ServerError::PasswordHash`] if the stored hash cannot be parsed.
 pub fn verify_password(password: &str, stored_hash: &str) -> ServerResult<bool> {
+    // Key-only accounts (taverns) store no password hash; password login must
+    // simply fail for them, not error on an unparseable empty hash.
+    if stored_hash.is_empty() {
+        return Ok(false);
+    }
     let parsed =
         PasswordHash::new(stored_hash).map_err(|e| ServerError::PasswordHash(e.to_string()))?;
     Ok(Argon2::default()
@@ -51,5 +56,11 @@ mod tests {
         let hash = hash_password("hunter2").unwrap();
         assert!(verify_password("hunter2", &hash).unwrap());
         assert!(!verify_password("wrong", &hash).unwrap());
+    }
+
+    #[test]
+    fn empty_hash_never_verifies() {
+        // Key-only accounts store no password hash; password login must fail.
+        assert!(!verify_password("anything", "").unwrap());
     }
 }

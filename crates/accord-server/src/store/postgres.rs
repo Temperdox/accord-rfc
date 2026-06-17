@@ -140,6 +140,19 @@ impl Store for PostgresStore {
         .await?)
     }
 
+    async fn find_user_by_identity(
+        &self,
+        identity_pubkey: &[u8],
+    ) -> ServerResult<Option<UserRow>> {
+        Ok(sqlx::query_as::<_, UserRow>(
+            "SELECT id, username, display_name, password_hash, is_guest \
+             FROM users WHERE identity_key = $1",
+        )
+        .bind(identity_pubkey)
+        .fetch_optional(&self.pool)
+        .await?)
+    }
+
     async fn is_user_guest(&self, user_id: Uuid) -> ServerResult<bool> {
         let row: Option<(bool,)> = sqlx::query_as("SELECT is_guest FROM users WHERE id = $1")
             .bind(user_id)
@@ -215,20 +228,33 @@ impl Store for PostgresStore {
         Ok(())
     }
 
-    async fn create_role(&self, name: &str, permissions: i64) -> ServerResult<Uuid> {
+    async fn create_role(&self, write: &RoleWrite) -> ServerResult<Uuid> {
         let id = Uuid::now_v7();
-        sqlx::query("INSERT INTO roles (id, name, permissions) VALUES ($1, $2, $3)")
-            .bind(id)
-            .bind(name)
-            .bind(permissions)
-            .execute(&self.pool)
-            .await?;
+        let (max_pos,): (i32,) =
+            sqlx::query_as("SELECT COALESCE(MAX(position), 0) FROM roles")
+                .fetch_one(&self.pool)
+                .await?;
+        sqlx::query(
+            "INSERT INTO roles (id, name, permissions, position, color, icon, hoist, mentionable)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8)",
+        )
+        .bind(id)
+        .bind(&write.name)
+        .bind(write.permissions)
+        .bind(max_pos + 1)
+        .bind(&write.color)
+        .bind(&write.icon)
+        .bind(write.hoist)
+        .bind(write.mentionable)
+        .execute(&self.pool)
+        .await?;
         Ok(id)
     }
 
     async fn list_roles(&self) -> ServerResult<Vec<RoleRow>> {
         Ok(sqlx::query_as::<_, RoleRow>(
-            "SELECT id, name, permissions, position, is_default FROM roles ORDER BY position, name",
+            "SELECT id, name, permissions, position, is_default, color, icon, hoist, mentionable
+             FROM roles ORDER BY position DESC, name",
         )
         .fetch_all(&self.pool)
         .await?)
@@ -236,28 +262,51 @@ impl Store for PostgresStore {
 
     async fn get_role(&self, id: Uuid) -> ServerResult<Option<RoleRow>> {
         Ok(sqlx::query_as::<_, RoleRow>(
-            "SELECT id, name, permissions, position, is_default FROM roles WHERE id = $1",
+            "SELECT id, name, permissions, position, is_default, color, icon, hoist, mentionable
+             FROM roles WHERE id = $1",
         )
         .bind(id)
         .fetch_optional(&self.pool)
         .await?)
     }
 
-    async fn update_role(&self, id: Uuid, name: &str, permissions: i64) -> ServerResult<()> {
-        sqlx::query("UPDATE roles SET name = $2, permissions = $3 WHERE id = $1")
+    async fn update_role(&self, id: Uuid, write: &RoleWrite) -> ServerResult<()> {
+        sqlx::query(
+            "UPDATE roles SET name = $2, permissions = $3, color = $4, icon = $5,
+                hoist = $6, mentionable = $7 WHERE id = $1",
+        )
+        .bind(id)
+        .bind(&write.name)
+        .bind(write.permissions)
+        .bind(&write.color)
+        .bind(&write.icon)
+        .bind(write.hoist)
+        .bind(write.mentionable)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    async fn delete_role(&self, id: Uuid) -> ServerResult<()> {
+        // member_roles has ON DELETE CASCADE, so assignments clear automatically.
+        sqlx::query("DELETE FROM roles WHERE id = $1 AND is_default = FALSE")
             .bind(id)
-            .bind(name)
-            .bind(permissions)
             .execute(&self.pool)
             .await?;
         Ok(())
     }
 
-    async fn delete_role(&self, id: Uuid) -> ServerResult<()> {
-        sqlx::query("DELETE FROM roles WHERE id = $1 AND is_default = FALSE")
-            .bind(id)
-            .execute(&self.pool)
-            .await?;
+    async fn reorder_roles(&self, ordered_top_first: &[Uuid]) -> ServerResult<()> {
+        let n = ordered_top_first.len() as i32;
+        let mut tx = self.pool.begin().await?;
+        for (i, id) in ordered_top_first.iter().enumerate() {
+            sqlx::query("UPDATE roles SET position = $2 WHERE id = $1 AND is_default = FALSE")
+                .bind(id)
+                .bind(n - i as i32)
+                .execute(&mut *tx)
+                .await?;
+        }
+        tx.commit().await?;
         Ok(())
     }
 
@@ -291,6 +340,17 @@ impl Store for PostgresStore {
         .bind(user_id)
         .fetch_all(&self.pool)
         .await?)
+    }
+
+    async fn highest_role_position(&self, user_id: Uuid) -> ServerResult<i32> {
+        let (pos,): (Option<i32>,) = sqlx::query_as(
+            "SELECT MAX(r.position) FROM roles r
+             JOIN member_roles m ON m.role_id = r.id WHERE m.user_id = $1",
+        )
+        .bind(user_id)
+        .fetch_one(&self.pool)
+        .await?;
+        Ok(pos.unwrap_or(0))
     }
 
     async fn member_permissions(&self, user_id: Uuid) -> ServerResult<i64> {
@@ -653,18 +713,20 @@ impl Store for PostgresStore {
     }
 
     async fn get_tavern(&self) -> ServerResult<TavernRow> {
-        let row: Option<(String, String, String, bool)> = sqlx::query_as(
-            "SELECT name, icon_url, description, linking_enabled FROM tavern_info LIMIT 1",
+        let row: Option<(String, String, String, bool, String)> = sqlx::query_as(
+            "SELECT name, icon_url, description, linking_enabled, banner_url
+             FROM tavern_info LIMIT 1",
         )
         .fetch_optional(&self.pool)
         .await?;
         Ok(row
             .map(
-                |(name, icon_url, description, linking_enabled)| TavernRow {
+                |(name, icon_url, description, linking_enabled, banner_url)| TavernRow {
                     name,
                     icon_url,
                     description,
                     linking_enabled,
+                    banner_url,
                 },
             )
             .unwrap_or(TavernRow {
@@ -672,6 +734,7 @@ impl Store for PostgresStore {
                 icon_url: String::new(),
                 description: String::new(),
                 linking_enabled: false,
+                banner_url: String::new(),
             }))
     }
 
@@ -681,17 +744,20 @@ impl Store for PostgresStore {
         name: &str,
         icon_url: &str,
         description: &str,
+        banner_url: &str,
     ) -> ServerResult<()> {
         sqlx::query(
-            "INSERT INTO tavern_info (id, name, icon_url, description) VALUES ($1, $2, $3, $4)
+            "INSERT INTO tavern_info (id, name, icon_url, description, banner_url)
+             VALUES ($1, $2, $3, $4, $5)
              ON CONFLICT (id) DO UPDATE
              SET name = EXCLUDED.name, icon_url = EXCLUDED.icon_url,
-                 description = EXCLUDED.description",
+                 description = EXCLUDED.description, banner_url = EXCLUDED.banner_url",
         )
         .bind(id)
         .bind(name)
         .bind(icon_url)
         .bind(description)
+        .bind(banner_url)
         .execute(&self.pool)
         .await?;
         Ok(())

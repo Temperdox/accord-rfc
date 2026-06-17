@@ -16,10 +16,12 @@ use accord_proto::messaging_service_client::MessagingServiceClient;
 use accord_proto::role_service_client::RoleServiceClient;
 use accord_proto::server_message::Payload as ServerPayload;
 use accord_proto::{
-    BanMemberRequest, ClientMessage, CreatePublicGroupRequest, DeleteGroupRequest,
-    FetchHistoryRequest, GetMyPermissionsRequest, GetTavernRequest, GroupId, KickMemberRequest,
-    ListBansRequest, ListGroupsRequest, ListMembersRequest, MessageId, RefreshTokenRequest,
-    SendPrivateMessage, SendPublicMessage, UnbanMemberRequest, UpdateTavernRequest, UserId,
+    AssignRoleRequest, BanMemberRequest, ClientMessage, CreatePublicGroupRequest,
+    CreateRoleRequest, DeleteGroupRequest, DeleteRoleRequest, FetchHistoryRequest,
+    GetMyPermissionsRequest, GetTavernRequest, GroupId, KickMemberRequest, ListAuditRequest,
+    ListBansRequest, ListGroupsRequest, ListMembersRequest, ListRolesRequest, MessageId,
+    RefreshTokenRequest, ReorderRolesRequest, SendPrivateMessage, SendPublicMessage,
+    UnassignRoleRequest, UnbanMemberRequest, UpdateRoleRequest, UpdateTavernRequest, UserId,
 };
 use tauri::{AppHandle, Emitter, Manager, State};
 use tokio::sync::{mpsc, oneshot};
@@ -28,9 +30,9 @@ use tonic::transport::Channel;
 use tonic::{Code, Request};
 
 use crate::commands::dto::{
-    BanDto, ConnectionStatus, DecryptedHistory, GroupDto, HistoryEntry, JoinedGroup, MemberDto,
-    MessageDto, ModAlertDto, MyPermsDto, PrivateMessageDto, TavernDto, VoiceParticipantDto,
-    VoiceSignalDto,
+    AuditDto, BanDto, ConnectionStatus, DecryptedHistory, GroupDto, HistoryEntry, JoinedGroup,
+    MemberDto, MessageDto, ModAlertDto, MyPermsDto, PrivateMessageDto, RoleDto, TavernDto,
+    VoiceParticipantDto, VoiceSignalDto,
 };
 use crate::grpc::{authed, require_session, status_to_string};
 use crate::state::{SharedEngine, SharedSessions};
@@ -549,6 +551,168 @@ pub async fn get_my_permissions(state: State<'_, SharedSessions>) -> Result<MyPe
     })
 }
 
+// --- Roles management (RoleService) -----------------------------------------
+// The full role editor: list/create/update/delete roles + assign/unassign to
+// members. All RPCs are gated server-side on MANAGE_ROLES with anti-escalation
+// (you can't grant or hold ADMINISTRATOR unless you already are admin).
+
+fn role_to_dto(r: accord_proto::Role) -> RoleDto {
+    RoleDto {
+        id: r.id,
+        name: r.name,
+        permissions: r.permissions,
+        position: r.position,
+        is_default: r.is_default,
+        color: r.color,
+        icon: r.icon,
+        hoist: r.hoist,
+        mentionable: r.mentionable,
+    }
+}
+
+/// List the tavern's roles (any member may view).
+#[tauri::command]
+pub async fn list_roles(state: State<'_, SharedSessions>) -> Result<Vec<RoleDto>, String> {
+    let (channel, token) = require_session(&state).await?;
+    let resp = RoleServiceClient::new(channel)
+        .list_roles(authed(Request::new(ListRolesRequest {}), &token)?)
+        .await
+        .map_err(status_to_string)?
+        .into_inner();
+    Ok(resp.roles.into_iter().map(role_to_dto).collect())
+}
+
+/// Create a role with the given name, permission bits, and display fields.
+#[tauri::command]
+#[allow(clippy::too_many_arguments)]
+pub async fn create_role(
+    state: State<'_, SharedSessions>,
+    name: String,
+    permissions: String,
+    color: String,
+    icon: String,
+    hoist: bool,
+    mentionable: bool,
+) -> Result<RoleDto, String> {
+    let (channel, token) = require_session(&state).await?;
+    let r = RoleServiceClient::new(channel)
+        .create_role(authed(
+            Request::new(CreateRoleRequest {
+                name,
+                permissions,
+                color,
+                icon,
+                hoist,
+                mentionable,
+            }),
+            &token,
+        )?)
+        .await
+        .map_err(status_to_string)?
+        .into_inner();
+    Ok(role_to_dto(r))
+}
+
+/// Update a role's name, permission bits, and display fields.
+#[tauri::command]
+#[allow(clippy::too_many_arguments)]
+pub async fn update_role(
+    state: State<'_, SharedSessions>,
+    id: String,
+    name: String,
+    permissions: String,
+    color: String,
+    icon: String,
+    hoist: bool,
+    mentionable: bool,
+) -> Result<RoleDto, String> {
+    let (channel, token) = require_session(&state).await?;
+    let r = RoleServiceClient::new(channel)
+        .update_role(authed(
+            Request::new(UpdateRoleRequest {
+                id,
+                name,
+                permissions,
+                color,
+                icon,
+                hoist,
+                mentionable,
+            }),
+            &token,
+        )?)
+        .await
+        .map_err(status_to_string)?
+        .into_inner();
+    Ok(role_to_dto(r))
+}
+
+/// Reorder roles top-to-bottom (highest power first); @everyone is omitted.
+#[tauri::command]
+pub async fn reorder_roles(
+    state: State<'_, SharedSessions>,
+    role_ids: Vec<String>,
+) -> Result<(), String> {
+    let (channel, token) = require_session(&state).await?;
+    RoleServiceClient::new(channel)
+        .reorder_roles(authed(Request::new(ReorderRolesRequest { role_ids }), &token)?)
+        .await
+        .map_err(status_to_string)?;
+    Ok(())
+}
+
+/// Delete a role (the @everyone default role cannot be deleted server-side).
+#[tauri::command]
+pub async fn delete_role(state: State<'_, SharedSessions>, id: String) -> Result<(), String> {
+    let (channel, token) = require_session(&state).await?;
+    RoleServiceClient::new(channel)
+        .delete_role(authed(Request::new(DeleteRoleRequest { id }), &token)?)
+        .await
+        .map_err(status_to_string)?;
+    Ok(())
+}
+
+/// Assign a role to a member.
+#[tauri::command]
+pub async fn assign_role(
+    state: State<'_, SharedSessions>,
+    user_id: String,
+    role_id: String,
+) -> Result<(), String> {
+    let (channel, token) = require_session(&state).await?;
+    RoleServiceClient::new(channel)
+        .assign_role(authed(
+            Request::new(AssignRoleRequest {
+                user_id: Some(UserId { value: user_id }),
+                role_id,
+            }),
+            &token,
+        )?)
+        .await
+        .map_err(status_to_string)?;
+    Ok(())
+}
+
+/// Remove a role from a member.
+#[tauri::command]
+pub async fn unassign_role(
+    state: State<'_, SharedSessions>,
+    user_id: String,
+    role_id: String,
+) -> Result<(), String> {
+    let (channel, token) = require_session(&state).await?;
+    RoleServiceClient::new(channel)
+        .unassign_role(authed(
+            Request::new(UnassignRoleRequest {
+                user_id: Some(UserId { value: user_id }),
+                role_id,
+            }),
+            &token,
+        )?)
+        .await
+        .map_err(status_to_string)?;
+    Ok(())
+}
+
 /// Fetch the tavern (server) identity.
 #[tauri::command]
 pub async fn get_tavern(state: State<'_, SharedSessions>) -> Result<TavernDto, String> {
@@ -563,6 +727,34 @@ pub async fn get_tavern(state: State<'_, SharedSessions>) -> Result<TavernDto, S
         icon_url: t.icon_url,
         description: t.description,
         linking_enabled: t.linking_enabled,
+        banner_url: t.banner_url,
+    })
+}
+
+/// Fetch a specific server's tavern identity (background read, does not switch
+/// the active session). Used to populate every rail glyph with its icon.
+#[tauri::command]
+pub async fn get_tavern_for(
+    state: State<'_, SharedSessions>,
+    server_id: String,
+) -> Result<TavernDto, String> {
+    let (channel, token) = {
+        let sessions = state.lock().await;
+        sessions
+            .channel_token_for(&server_id)
+            .ok_or_else(|| "no session for server".to_string())?
+    };
+    let t = GroupServiceClient::new(channel)
+        .get_tavern(authed(Request::new(GetTavernRequest {}), &token)?)
+        .await
+        .map_err(status_to_string)?
+        .into_inner();
+    Ok(TavernDto {
+        name: t.name,
+        icon_url: t.icon_url,
+        description: t.description,
+        linking_enabled: t.linking_enabled,
+        banner_url: t.banner_url,
     })
 }
 
@@ -573,6 +765,7 @@ pub async fn update_tavern(
     name: String,
     icon_url: Option<String>,
     description: Option<String>,
+    banner_url: Option<String>,
 ) -> Result<TavernDto, String> {
     let (channel, token) = require_session(&state).await?;
     let t = GroupServiceClient::new(channel)
@@ -581,6 +774,7 @@ pub async fn update_tavern(
                 name,
                 icon_url: icon_url.unwrap_or_default(),
                 description: description.unwrap_or_default(),
+                banner_url: banner_url.unwrap_or_default(),
             }),
             &token,
         )?)
@@ -592,6 +786,7 @@ pub async fn update_tavern(
         icon_url: t.icon_url,
         description: t.description,
         linking_enabled: t.linking_enabled,
+        banner_url: t.banner_url,
     })
 }
 
@@ -651,6 +846,37 @@ pub async fn unban_member(state: State<'_, SharedSessions>, user_id: String) -> 
         .await
         .map_err(status_to_string)?;
     Ok(())
+}
+
+/// The moderation audit log (gated by MANAGE_SERVER).
+#[tauri::command]
+pub async fn list_audit(
+    state: State<'_, SharedSessions>,
+    limit: Option<u32>,
+) -> Result<Vec<AuditDto>, String> {
+    let (channel, token) = require_session(&state).await?;
+    let resp = GroupServiceClient::new(channel)
+        .list_audit(authed(
+            Request::new(ListAuditRequest {
+                limit: limit.unwrap_or(100),
+            }),
+            &token,
+        )?)
+        .await
+        .map_err(status_to_string)?
+        .into_inner();
+    Ok(resp
+        .entries
+        .into_iter()
+        .map(|e| AuditDto {
+            actor_id: e.actor_id.map(|u| u.value).unwrap_or_default(),
+            action: e.action,
+            target: e.target,
+            verdict: e.verdict,
+            reason: e.reason,
+            created_at_ms: e.created_at_ms,
+        })
+        .collect())
 }
 
 /// List the server's bans (gated by BAN_MEMBERS).

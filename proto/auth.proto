@@ -22,6 +22,12 @@ service AuthService {
   rpc Register(RegisterRequest) returns (RegisterResponse);
   // Authenticate with username + password, registering/identifying a device.
   rpc Login(LoginRequest) returns (LoginResponse);
+  // Password-less auth for key-based accounts (taverns): the client gets a
+  // short-lived challenge, signs it with its per-server identity key, and the
+  // server verifies the signature against the registered identity key. Lets a
+  // user join/return to many taverns without a password each (ARCHITECTURE §12).
+  rpc RequestChallenge(ChallengeRequest) returns (ChallengeResponse);
+  rpc LoginWithKey(KeyLoginRequest) returns (LoginResponse);
   // Exchange a valid refresh token for a fresh access token.
   rpc RefreshToken(RefreshTokenRequest) returns (RefreshTokenResponse);
   // Attach an MLS credential + signature to the calling device so others can
@@ -63,8 +69,32 @@ message LookupUserResponse {
   string display_name = 2;
 }
 
+message ChallengeRequest {
+  // The per-server identity key the client intends to authenticate as.
+  bytes identity_pubkey = 1;
+}
+
+message ChallengeResponse {
+  // Opaque, short-lived, server-signed token the client signs with its identity
+  // key and returns in LoginWithKey. The server never trusts a client-chosen one.
+  string challenge = 1;
+}
+
+message KeyLoginRequest {
+  bytes identity_pubkey = 1;
+  // The challenge from RequestChallenge.
+  string challenge = 2;
+  // Ed25519 signature over the challenge bytes, by the identity key.
+  bytes signature = 3;
+  // Human-readable label for the device being logged in from.
+  string device_name = 4;
+}
+
 message RegisterRequest {
   string username = 1;
+  // Optional: empty for a key-only account (auth is by identity_pubkey via
+  // LoginWithKey). When set, enables password login (e.g. the home account,
+  // whose password also protects the master-key backup).
   string password = 2;
   string display_name = 3;
   // Required to register on a private (invite-only) server, unless this is the

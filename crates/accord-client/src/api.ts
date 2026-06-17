@@ -77,6 +77,14 @@ export const login = (
 ): Promise<LoginInfo> =>
   invoke("login", { username, password, deviceName });
 
+/** Password-less key login (taverns): authenticates with this server's derived
+ * identity key via a signed challenge. No password - the master key is created
+ * at home signup and protected by that one password for backup/recovery. */
+export const loginWithKey = (
+  username: string,
+  deviceName: string
+): Promise<LoginInfo> => invoke("login_with_key", { username, deviceName });
+
 /** List the channels the logged-in user belongs to. */
 export const listGroups = (): Promise<GroupDto[]> => invoke("list_groups");
 
@@ -448,6 +456,10 @@ export const createTavern = (name: string): Promise<TavernConnect> =>
 export const resumeHostedTaverns = (): Promise<TavernConnect[]> =>
   invoke("resume_hosted_taverns");
 
+/** Delete a tavern you host (stops it + wipes its data). Irreversible. */
+export const deleteTavern = (id: string): Promise<void> =>
+  invoke("delete_tavern", { id });
+
 /**
  * Subscribe to real-time incoming messages pushed from the Rust message stream.
  * Returns an unlisten function to call on cleanup.
@@ -460,15 +472,146 @@ export const onIncomingMessage = (
 // ---- Taverns: channels, members, identity, moderation ----------------------
 
 /** Permission bits (mirror of accord-types::perms; serialized as decimal u64
- * strings — we test bits with BigInt). Only the ones the UI gates on. */
+ * strings - we test bits with BigInt). Only the ones the UI gates on. */
 export const PERM = {
   ADMINISTRATOR: 1n << 0n,
+  VIEW_CHANNELS: 1n << 1n,
+  SEND_MESSAGES: 1n << 2n,
+  MANAGE_MESSAGES: 1n << 3n,
   MANAGE_CHANNELS: 1n << 4n,
   MANAGE_ROLES: 1n << 5n,
+  CREATE_INVITE: 1n << 6n,
   KICK_MEMBERS: 1n << 7n,
   BAN_MEMBERS: 1n << 8n,
   MANAGE_SERVER: 1n << 9n,
+  CREATE_PRIVATE_CHAT: 1n << 10n,
+  MENTION_EVERYONE: 1n << 11n,
+  ATTACH_FILES: 1n << 12n,
+  ADD_REACTIONS: 1n << 13n,
 };
+
+/** One togglable permission, with a clear label and a full description. */
+export interface PermDef {
+  bit: bigint;
+  key: string;
+  label: string;
+  desc: string;
+}
+/** A category of related permissions, shown under a header in the role editor. */
+export interface PermGroup {
+  category: string;
+  perms: PermDef[];
+}
+
+/** All togglable permissions, grouped by what they affect. Only the bits the
+ * server actually enforces appear here (accord-types::perms). ADMINISTRATOR is
+ * isolated in its own "Advanced" group and flagged as override-everything. */
+export const PERM_GROUPS: PermGroup[] = [
+  {
+    category: "General Server Permissions",
+    perms: [
+      {
+        bit: PERM.VIEW_CHANNELS,
+        key: "VIEW_CHANNELS",
+        label: "View Channels",
+        desc: "Allows members to view channels by default. Without this, a member sees no channels in the tavern.",
+      },
+      {
+        bit: PERM.MANAGE_CHANNELS,
+        key: "MANAGE_CHANNELS",
+        label: "Manage Channels",
+        desc: "Allows members to create, rename, and delete text and voice channels in this tavern.",
+      },
+      {
+        bit: PERM.MANAGE_ROLES,
+        key: "MANAGE_ROLES",
+        label: "Manage Roles",
+        desc: "Allows members to create new roles and edit or delete roles lower than their highest role. They can never grant a permission they do not already have.",
+      },
+      {
+        bit: PERM.MANAGE_SERVER,
+        key: "MANAGE_SERVER",
+        label: "Manage Tavern",
+        desc: "Allows members to change the tavern's name, description, and icon, and to configure tavern-wide settings such as AutoMod.",
+      },
+    ],
+  },
+  {
+    category: "Membership Permissions",
+    perms: [
+      {
+        bit: PERM.CREATE_INVITE,
+        key: "CREATE_INVITE",
+        label: "Create Invite",
+        desc: "Allows members to generate invite keys that let new people join this tavern.",
+      },
+      {
+        bit: PERM.KICK_MEMBERS,
+        key: "KICK_MEMBERS",
+        label: "Kick Members",
+        desc: "Allows members to remove other members from this tavern. A kicked member can rejoin with a new invite. You can only kick members ranked below your highest role.",
+      },
+      {
+        bit: PERM.BAN_MEMBERS,
+        key: "BAN_MEMBERS",
+        label: "Ban Members",
+        desc: "Allows members to permanently ban accounts from this tavern. You can only ban members ranked below your highest role; the owner can never be banned.",
+      },
+    ],
+  },
+  {
+    category: "Text & Messaging Permissions",
+    perms: [
+      {
+        bit: PERM.SEND_MESSAGES,
+        key: "SEND_MESSAGES",
+        label: "Send Messages",
+        desc: "Allows members to send messages in text channels they can view.",
+      },
+      {
+        bit: PERM.CREATE_PRIVATE_CHAT,
+        key: "CREATE_PRIVATE_CHAT",
+        label: "Start Private Chats",
+        desc: "Allows members to open end-to-end-encrypted private DMs with other members.",
+      },
+      {
+        bit: PERM.ATTACH_FILES,
+        key: "ATTACH_FILES",
+        label: "Attach Files",
+        desc: "Allows members to upload and share files and media in text channels.",
+      },
+      {
+        bit: PERM.ADD_REACTIONS,
+        key: "ADD_REACTIONS",
+        label: "Add Reactions",
+        desc: "Allows members to add new emoji reactions to messages. Members can always use reactions already present on a message.",
+      },
+      {
+        bit: PERM.MENTION_EVERYONE,
+        key: "MENTION_EVERYONE",
+        label: "Mention @everyone and @here",
+        desc: "Allows members to use @everyone (everyone in the tavern) and @here (online members) to notify many people at once.",
+      },
+      {
+        bit: PERM.MANAGE_MESSAGES,
+        key: "MANAGE_MESSAGES",
+        label: "Manage Messages",
+        desc: "Allows members to delete messages sent by other members and to pin or unpin any message.",
+      },
+    ],
+  },
+  {
+    category: "Advanced Permissions",
+    perms: [
+      {
+        bit: PERM.ADMINISTRATOR,
+        key: "ADMINISTRATOR",
+        label: "Administrator",
+        desc: "Members with this permission have every permission and bypass all channel-specific restrictions. This is the most dangerous permission to grant - hand it out carefully.",
+      },
+    ],
+  },
+];
 
 /** The caller's effective permissions on the active server. */
 export interface MyPerms {
@@ -487,6 +630,71 @@ export const can = (perms: MyPerms | null, bit: bigint): boolean => {
 
 /** Fetch the caller's effective permissions (gates admin affordances). */
 export const getMyPermissions = (): Promise<MyPerms> => invoke("get_my_permissions");
+
+/** A role. `permissions` is a decimal-string u64; `position` orders power
+ * (higher = more power, @everyone = 0); `icon` is a base64 data URL or "". */
+export interface RoleDto {
+  id: string;
+  name: string;
+  permissions: string;
+  position: number;
+  isDefault: boolean;
+  color: string;
+  icon: string;
+  hoist: boolean;
+  mentionable: boolean;
+}
+
+/** The editable display + behaviour fields of a role. */
+export interface RoleWrite {
+  name: string;
+  permissions: string;
+  color: string;
+  icon: string;
+  hoist: boolean;
+  mentionable: boolean;
+}
+
+/** List the tavern's roles (highest power first; @everyone last). */
+export const listRoles = (): Promise<RoleDto[]> => invoke("list_roles");
+
+/** Create a role (gated by MANAGE_ROLES, with anti-escalation). */
+export const createRole = (w: RoleWrite): Promise<RoleDto> =>
+  invoke("create_role", {
+    name: w.name,
+    permissions: w.permissions,
+    color: w.color,
+    icon: w.icon,
+    hoist: w.hoist,
+    mentionable: w.mentionable,
+  });
+
+/** Update a role's name, permission bits, and display fields. */
+export const updateRole = (id: string, w: RoleWrite): Promise<RoleDto> =>
+  invoke("update_role", {
+    id,
+    name: w.name,
+    permissions: w.permissions,
+    color: w.color,
+    icon: w.icon,
+    hoist: w.hoist,
+    mentionable: w.mentionable,
+  });
+
+/** Reorder roles top-to-bottom (highest power first); omit @everyone. */
+export const reorderRoles = (roleIds: string[]): Promise<void> =>
+  invoke("reorder_roles", { roleIds });
+
+/** Delete a role (the @everyone default cannot be deleted). */
+export const deleteRole = (id: string): Promise<void> => invoke("delete_role", { id });
+
+/** Assign a role to a member. */
+export const assignRole = (userId: string, roleId: string): Promise<void> =>
+  invoke("assign_role", { userId, roleId });
+
+/** Remove a role from a member. */
+export const unassignRole = (userId: string, roleId: string): Promise<void> =>
+  invoke("unassign_role", { userId, roleId });
 
 /** Create a public channel (text or voice). Gated server-side. */
 export const createChannel = (
@@ -514,24 +722,37 @@ export interface MemberDto {
 export const listMembers = (groupId: string): Promise<MemberDto[]> =>
   invoke("list_members", { groupId });
 
-/** Tavern (server) identity. */
+/** Tavern (server) identity. `iconUrl`/`bannerUrl` are base64 data URLs or "". */
 export interface TavernDto {
   name: string;
   iconUrl: string;
   description: string;
   linkingEnabled: boolean;
+  bannerUrl: string;
 }
 
-/** Fetch the tavern identity. */
+/** Fetch the active tavern's identity. */
 export const getTavern = (): Promise<TavernDto> => invoke("get_tavern");
 
-/** Update the tavern identity (gated by MANAGE_SERVER). */
+/** Fetch a specific server's tavern identity without switching sessions (used
+ * to show every rail server's icon, not just the active one). */
+export const getTavernFor = (serverId: string): Promise<TavernDto> =>
+  invoke("get_tavern_for", { serverId });
+
+/** Update the tavern identity (gated by MANAGE_SERVER). Pass every field; omit
+ * one (undefined) to clear it. */
 export const updateTavern = (
   name: string,
   iconUrl?: string,
-  description?: string
+  description?: string,
+  bannerUrl?: string
 ): Promise<TavernDto> =>
-  invoke("update_tavern", { name, iconUrl: iconUrl ?? "", description: description ?? "" });
+  invoke("update_tavern", {
+    name,
+    iconUrl: iconUrl ?? "",
+    description: description ?? "",
+    bannerUrl: bannerUrl ?? "",
+  });
 
 /** Kick a member from a channel (gated by KICK_MEMBERS). */
 export const kickMember = (groupId: string, userId: string): Promise<void> =>
@@ -555,6 +776,20 @@ export interface BanDto {
 
 /** List the server's bans (gated by BAN_MEMBERS). */
 export const listBans = (): Promise<BanDto[]> => invoke("list_bans");
+
+/** A moderation audit-log entry. */
+export interface AuditEntry {
+  actorId: string;
+  action: string;
+  target: string;
+  verdict: string;
+  reason: string;
+  createdAtMs: number;
+}
+
+/** The moderation audit log, newest first (gated by MANAGE_SERVER). */
+export const listAudit = (limit?: number): Promise<AuditEntry[]> =>
+  invoke("list_audit", { limit: limit ?? 100 });
 
 /** Payload of the `mod-alert` event (guardrail decision shown to admins). */
 export interface ModAlert {

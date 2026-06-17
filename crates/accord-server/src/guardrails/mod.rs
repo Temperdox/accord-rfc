@@ -1,7 +1,7 @@
-//! Guardrails / auto-mod — abuse resistance ORTHOGONAL to RBAC.
+//! Guardrails / auto-mod - abuse resistance ORTHOGONAL to RBAC.
 //!
 //! RBAC ([`crate::authz`]) answers *"may you do this at all?"*. Guardrails answer
-//! *"how fast, and does this look hostile?"* — and they apply **even to
+//! *"how fast, and does this look hostile?"* - and they apply **even to
 //! ADMINISTRATOR roles**, so a compromised or rogue admin can't mass-delete
 //! channels, mass-kick, or flood new channels faster than the limits allow. A
 //! tripped guardrail is recorded to the audit log and broadcast as a live
@@ -13,7 +13,7 @@
 //! heavier cryptographic layers (ban-tag PRF, proof-of-work) layer on later.
 //!
 //! Owner policy: by default the owner is *audited + alerted* but not hard-blocked
-//! (`block_owner = false`) — the owner is the root of trust and can disable
+//! (`block_owner = false`) - the owner is the root of trust and can disable
 //! guardrails anyway. Flip [`GuardrailConfig::block_owner`] to subject the owner
 //! to the same limits.
 //!
@@ -99,7 +99,7 @@ impl ActionClass {
 pub enum GuardrailDecision {
     /// Proceed normally.
     Allow,
-    /// Proceed, but the action is suspicious — record + alert admins.
+    /// Proceed, but the action is suspicious - record + alert admins.
     AllowFlagged { reason: String },
     /// Rate-limited; retry after roughly this many seconds.
     Throttle { retry_after_secs: u64, reason: String },
@@ -221,7 +221,7 @@ impl Guardrails {
         now: Instant,
     ) -> GuardrailDecision {
         // Name heuristics first (additive griefing): a spammy/random channel name
-        // is flagged even when within rate — alert admins, but let it through (a
+        // is flagged even when within rate - alert admins, but let it through (a
         // hard block on names risks false positives; the rate limit is the wall).
         let mut flagged: Option<String> = None;
         if action == ActionClass::CreateChannel {

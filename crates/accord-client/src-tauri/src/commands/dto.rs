@@ -45,6 +45,7 @@ pub struct TavernDto {
     pub icon_url: String,
     pub description: String,
     pub linking_enabled: bool,
+    pub banner_url: String,
 }
 
 /// The caller's effective permissions (decimal-string u64) + owner flag, for
@@ -54,6 +55,38 @@ pub struct TavernDto {
 pub struct MyPermsDto {
     pub permissions: String,
     pub is_owner: bool,
+}
+
+/// A moderation audit-log entry (for the Server Settings audit viewer).
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AuditDto {
+    pub actor_id: String,
+    pub action: String,
+    pub target: String,
+    pub verdict: String,
+    pub reason: String,
+    pub created_at_ms: i64,
+}
+
+/// A role for the Roles management UI (permissions = decimal-string u64).
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RoleDto {
+    pub id: String,
+    pub name: String,
+    pub permissions: String,
+    /// Power order: higher = higher in the list = more power. @everyone = 0.
+    pub position: i32,
+    pub is_default: bool,
+    /// Hex color (e.g. "#5865f2") or "" for the default text color.
+    pub color: String,
+    /// Small inline icon as a base64 data URL, or "" for none.
+    pub icon: String,
+    /// Display members with this role in a separate member-list section.
+    pub hoist: bool,
+    /// Anyone may @mention this role.
+    pub mentionable: bool,
 }
 
 /// A ban entry for the (gated) bans list.

@@ -51,6 +51,10 @@ fn role_from_row(r: sqlx::sqlite::SqliteRow) -> ServerResult<RoleRow> {
         permissions: r.get("permissions"),
         position: r.get::<i64, _>("position") as i32,
         is_default: r.get::<i64, _>("is_default") != 0,
+        color: r.get("color"),
+        icon: r.get("icon"),
+        hoist: r.get::<i64, _>("hoist") != 0,
+        mentionable: r.get::<i64, _>("mentionable") != 0,
     })
 }
 
@@ -193,6 +197,29 @@ impl Store for SqliteStore {
         }
     }
 
+    async fn find_user_by_identity(
+        &self,
+        identity_pubkey: &[u8],
+    ) -> ServerResult<Option<UserRow>> {
+        let row = sqlx::query(
+            "SELECT id, username, display_name, password_hash, is_guest \
+             FROM users WHERE identity_key = ?",
+        )
+        .bind(identity_pubkey)
+        .fetch_optional(&self.pool)
+        .await?;
+        match row {
+            None => Ok(None),
+            Some(r) => Ok(Some(UserRow {
+                id: parse_id(r.get("id"))?,
+                username: r.get("username"),
+                display_name: r.get("display_name"),
+                password_hash: r.get("password_hash"),
+                is_guest: r.get::<i64, _>("is_guest") != 0,
+            })),
+        }
+    }
+
     async fn is_user_guest(&self, user_id: Uuid) -> ServerResult<bool> {
         let row: Option<(i64,)> = sqlx::query_as("SELECT is_guest FROM users WHERE id = ?")
             .bind(user_id.to_string())
@@ -270,21 +297,37 @@ impl Store for SqliteStore {
         Ok(())
     }
 
-    async fn create_role(&self, name: &str, permissions: i64) -> ServerResult<Uuid> {
+    async fn create_role(&self, write: &RoleWrite) -> ServerResult<Uuid> {
         let id = Uuid::now_v7();
-        sqlx::query("INSERT INTO roles (id, name, permissions, created_at) VALUES (?, ?, ?, ?)")
-            .bind(id.to_string())
-            .bind(name)
-            .bind(permissions)
-            .bind(Utc::now().timestamp_millis())
-            .execute(&self.pool)
-            .await?;
+        // New roles sit just above the current top (max position + 1), always
+        // above @everyone (position 0).
+        let (max_pos,): (i64,) =
+            sqlx::query_as("SELECT COALESCE(MAX(position), 0) FROM roles")
+                .fetch_one(&self.pool)
+                .await?;
+        sqlx::query(
+            "INSERT INTO roles
+                (id, name, permissions, position, is_default, color, icon, hoist, mentionable, created_at)
+             VALUES (?, ?, ?, ?, 0, ?, ?, ?, ?, ?)",
+        )
+        .bind(id.to_string())
+        .bind(&write.name)
+        .bind(write.permissions)
+        .bind(max_pos + 1)
+        .bind(&write.color)
+        .bind(&write.icon)
+        .bind(i64::from(write.hoist))
+        .bind(i64::from(write.mentionable))
+        .bind(Utc::now().timestamp_millis())
+        .execute(&self.pool)
+        .await?;
         Ok(id)
     }
 
     async fn list_roles(&self) -> ServerResult<Vec<RoleRow>> {
         let rows = sqlx::query(
-            "SELECT id, name, permissions, position, is_default FROM roles ORDER BY position, name",
+            "SELECT id, name, permissions, position, is_default, color, icon, hoist, mentionable
+             FROM roles ORDER BY position DESC, name",
         )
         .fetch_all(&self.pool)
         .await?;
@@ -293,7 +336,8 @@ impl Store for SqliteStore {
 
     async fn get_role(&self, id: Uuid) -> ServerResult<Option<RoleRow>> {
         let row = sqlx::query(
-            "SELECT id, name, permissions, position, is_default FROM roles WHERE id = ?",
+            "SELECT id, name, permissions, position, is_default, color, icon, hoist, mentionable
+             FROM roles WHERE id = ?",
         )
         .bind(id.to_string())
         .fetch_optional(&self.pool)
@@ -301,21 +345,49 @@ impl Store for SqliteStore {
         row.map(role_from_row).transpose()
     }
 
-    async fn update_role(&self, id: Uuid, name: &str, permissions: i64) -> ServerResult<()> {
-        sqlx::query("UPDATE roles SET name = ?, permissions = ? WHERE id = ?")
-            .bind(name)
-            .bind(permissions)
+    async fn update_role(&self, id: Uuid, write: &RoleWrite) -> ServerResult<()> {
+        sqlx::query(
+            "UPDATE roles SET name = ?, permissions = ?, color = ?, icon = ?,
+                hoist = ?, mentionable = ? WHERE id = ?",
+        )
+        .bind(&write.name)
+        .bind(write.permissions)
+        .bind(&write.color)
+        .bind(&write.icon)
+        .bind(i64::from(write.hoist))
+        .bind(i64::from(write.mentionable))
+        .bind(id.to_string())
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    async fn delete_role(&self, id: Uuid) -> ServerResult<()> {
+        // No FK enforcement in SQLite, so clear assignments by hand first.
+        sqlx::query("DELETE FROM member_roles WHERE role_id = ?")
+            .bind(id.to_string())
+            .execute(&self.pool)
+            .await?;
+        sqlx::query("DELETE FROM roles WHERE id = ? AND is_default = 0")
             .bind(id.to_string())
             .execute(&self.pool)
             .await?;
         Ok(())
     }
 
-    async fn delete_role(&self, id: Uuid) -> ServerResult<()> {
-        sqlx::query("DELETE FROM roles WHERE id = ? AND is_default = 0")
-            .bind(id.to_string())
-            .execute(&self.pool)
-            .await?;
+    async fn reorder_roles(&self, ordered_top_first: &[Uuid]) -> ServerResult<()> {
+        // First id = highest power. Assign descending positions starting at n so
+        // every listed role stays above @everyone (position 0).
+        let n = ordered_top_first.len() as i64;
+        let mut tx = self.pool.begin().await?;
+        for (i, id) in ordered_top_first.iter().enumerate() {
+            sqlx::query("UPDATE roles SET position = ? WHERE id = ? AND is_default = 0")
+                .bind(n - i as i64)
+                .bind(id.to_string())
+                .execute(&mut *tx)
+                .await?;
+        }
+        tx.commit().await?;
         Ok(())
     }
 
@@ -350,6 +422,17 @@ impl Store for SqliteStore {
         .fetch_all(&self.pool)
         .await?;
         rows.into_iter().map(role_from_row).collect()
+    }
+
+    async fn highest_role_position(&self, user_id: Uuid) -> ServerResult<i32> {
+        let (pos,): (i64,) = sqlx::query_as(
+            "SELECT COALESCE(MAX(r.position), 0) FROM roles r
+             JOIN member_roles m ON m.role_id = r.id WHERE m.user_id = ?",
+        )
+        .bind(user_id.to_string())
+        .fetch_one(&self.pool)
+        .await?;
+        Ok(pos as i32)
     }
 
     async fn member_permissions(&self, user_id: Uuid) -> ServerResult<i64> {
@@ -623,7 +706,7 @@ impl Store for SqliteStore {
 
     async fn delete_group(&self, group_id: Uuid) -> ServerResult<()> {
         // SQLite doesn't enforce FKs here (no `PRAGMA foreign_keys`), so the
-        // ON DELETE CASCADE in the schema doesn't fire — delete children first.
+        // ON DELETE CASCADE in the schema doesn't fire - delete children first.
         let gid = group_id.to_string();
         for table in ["group_members", "public_messages", "private_messages"] {
             sqlx::query(&format!("DELETE FROM {table} WHERE group_id = ?"))
@@ -765,7 +848,8 @@ impl Store for SqliteStore {
 
     async fn get_tavern(&self) -> ServerResult<TavernRow> {
         let row = sqlx::query(
-            "SELECT name, icon_url, description, linking_enabled FROM tavern_info LIMIT 1",
+            "SELECT name, icon_url, description, linking_enabled, banner_url
+             FROM tavern_info LIMIT 1",
         )
         .fetch_optional(&self.pool)
         .await?;
@@ -775,12 +859,14 @@ impl Store for SqliteStore {
                 icon_url: r.get("icon_url"),
                 description: r.get("description"),
                 linking_enabled: r.get::<i64, _>("linking_enabled") != 0,
+                banner_url: r.get("banner_url"),
             })
             .unwrap_or(TavernRow {
                 name: String::new(),
                 icon_url: String::new(),
                 description: String::new(),
                 linking_enabled: false,
+                banner_url: String::new(),
             }))
     }
 
@@ -790,17 +876,20 @@ impl Store for SqliteStore {
         name: &str,
         icon_url: &str,
         description: &str,
+        banner_url: &str,
     ) -> ServerResult<()> {
         sqlx::query(
-            "INSERT INTO tavern_info (id, name, icon_url, description) VALUES (?, ?, ?, ?)
+            "INSERT INTO tavern_info (id, name, icon_url, description, banner_url)
+             VALUES (?, ?, ?, ?, ?)
              ON CONFLICT (id) DO UPDATE
              SET name = excluded.name, icon_url = excluded.icon_url,
-                 description = excluded.description",
+                 description = excluded.description, banner_url = excluded.banner_url",
         )
         .bind(id.to_string())
         .bind(name)
         .bind(icon_url)
         .bind(description)
+        .bind(banner_url)
         .execute(&self.pool)
         .await?;
         Ok(())

@@ -1,5 +1,5 @@
 /**
- * SandboxedFrame — isolation wrapper for ALL embedded/rich content (future
+ * SandboxedFrame - isolation wrapper for ALL embedded/rich content (future
  * channel presets, and the natural home for screen-share / camera video).
  *
  * The `sandbox` attribute deliberately OMITS `allow-same-origin`, so the framed
@@ -40,7 +40,7 @@ export default function SandboxedFrame(props: SandboxedFrameProps) {
       ref={frame}
       class={props.class ?? "sandboxed-frame"}
       title={props.title ?? "embedded content"}
-      // NOTE: no `allow-same-origin` — embedded content is a separate opaque
+      // NOTE: no `allow-same-origin` - embedded content is a separate opaque
       // origin and can never reach the app, Tauri invoke, or the session.
       sandbox="allow-scripts"
       srcdoc={props.srcdoc}

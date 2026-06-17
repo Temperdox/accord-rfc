@@ -23,14 +23,20 @@ import {
 } from "solid-js";
 import Fa from "solid-fa";
 import {
+  faChevronDown,
   faComments,
   faDesktop,
+  faFaceSmile,
   faGear,
   faGlobe,
   faHashtag,
   faLock,
   faMicrophone,
   faMicrophoneSlash,
+  faNoteSticky,
+  faPaperPlane,
+  faPaperclip,
+  faPhone,
   faPhoneSlash,
   faPlus,
   faRightToBracket,
@@ -40,10 +46,14 @@ import {
   faVideo,
   faVolumeHigh,
   faUserPlus,
+  faXmark,
 } from "@fortawesome/free-solid-svg-icons";
+import type { IconDefinition } from "@fortawesome/fontawesome-svg-core";
 import * as api from "./api";
 import type { GroupDto } from "./api";
 import * as voice from "./voice";
+import NotificationBar from "./NotificationBar";
+import { dismissKey, notify, notifyTransient } from "./notifications";
 
 /** A server the user is signed in to (their home, or one they joined). */
 interface ServerSession {
@@ -55,14 +65,43 @@ interface ServerSession {
   password: string;
 }
 
+/** One row in the custom context menu. `sep` renders a divider above the item. */
+interface MenuItem {
+  label: string;
+  icon?: IconDefinition;
+  danger?: boolean;
+  sep?: boolean;
+  onClick: () => void;
+}
+
+/** Options for the custom confirmation dialog (replaces native window.confirm). */
+interface ConfirmOpts {
+  title: string;
+  body: string;
+  confirmLabel?: string;
+  cancelLabel?: string;
+  danger?: boolean;
+}
+
+/** Preset role-color swatches (members use their highest role's color). */
+const ROLE_COLORS = [
+  "#1abc9c", "#2ecc71", "#3498db", "#9b59b6", "#e91e63", "#f1c40f",
+  "#e67e22", "#e74c3c", "#95a5a6", "#607d8b", "#11806a", "#1f8b4c",
+  "#206694", "#71368a", "#ad1457", "#c27c0e", "#a84300", "#992d22",
+];
+
 export default function App() {
   // Dev tooling lives in the native Dev menu (debug builds only) - there is
   // deliberately no in-app dev banner.
   const [session, setSession] = createSignal<ServerSession | null>(null);
   return (
-    <Show when={session()} fallback={<AuthScreen onAuthed={setSession} />}>
-      <Home home={session()!} />
-    </Show>
+    <>
+      {/* Full-width header bar (sits above the app; #root is a flex column). */}
+      <NotificationBar />
+      <Show when={session()} fallback={<AuthScreen onAuthed={setSession} />}>
+        <Home home={session()!} />
+      </Show>
+    </>
   );
 }
 
@@ -344,7 +383,6 @@ function Home(props: { home: ServerSession }) {
   const [activeId, setActiveId] = createSignal<string | null>(null);
   const [messages, setMessages] = createSignal<UiMessage[]>([]);
   const [draft, setDraft] = createSignal("");
-  const [dmName, setDmName] = createSignal("");
   const [error, setError] = createSignal<string | null>(null);
   const [invite, setInvite] = createSignal<{ key: string; error: string } | null>(null);
   const [encryptAtRest, setEncryptAtRest] = createSignal(false);
@@ -361,6 +399,53 @@ function Home(props: { home: ServerSession }) {
   const [rdvLabel, setRdvLabel] = createSignal("");
   const [rdvMine, setRdvMine] = createSignal(true);
   const [maxTaverns, setMaxTaverns] = createSignal(16);
+  // Contact popout profile card + a generic custom context menu (Discord-style;
+  // the native webview menu is suppressed app-wide in onMount).
+  const [profileCard, setProfileCard] = createSignal<{
+    c: api.ContactDto;
+    x: number;
+    y: number;
+  } | null>(null);
+  const [menu, setMenu] = createSignal<{ x: number; y: number; items: MenuItem[] } | null>(null);
+  // Full-screen Server (tavern) settings page, gated by MANAGE_SERVER.
+  type SettingsSection =
+    | "overview"
+    | "roles"
+    | "members"
+    | "invites"
+    | "audit"
+    | "bans"
+    | "automod"
+    | "delete";
+  const [tavernSettingsOpen, setTavernSettingsOpen] = createSignal(false);
+  const [settingsSection, setSettingsSection] = createSignal<SettingsSection>("overview");
+  const [tavName, setTavName] = createSignal("");
+  const [tavDesc, setTavDesc] = createSignal("");
+  const [tavIcon, setTavIcon] = createSignal(""); // base64 data URL or ""
+  const [tavBanner, setTavBanner] = createSignal(""); // base64 data URL or ""
+  const [settingsBans, setSettingsBans] = createSignal<api.BanDto[]>([]);
+  const [settingsAudit, setSettingsAudit] = createSignal<api.AuditEntry[]>([]);
+  // Roles editor: the role list, the currently-edited role, and its draft state.
+  const [roles, setRoles] = createSignal<api.RoleDto[]>([]);
+  // editingRole holds the ORIGINAL (last-saved) role; null = editor closed.
+  // "" id = a brand-new unsaved role.
+  const [editingRole, setEditingRole] = createSignal<api.RoleDto | null>(null);
+  const [roleTab, setRoleTab] = createSignal<"display" | "permissions">("display");
+  const [roleDraftName, setRoleDraftName] = createSignal("");
+  const [roleDraftPerms, setRoleDraftPerms] = createSignal(0n);
+  const [roleDraftColor, setRoleDraftColor] = createSignal("");
+  const [roleDraftIcon, setRoleDraftIcon] = createSignal("");
+  const [roleDraftHoist, setRoleDraftHoist] = createSignal(false);
+  const [roleDraftMentionable, setRoleDraftMentionable] = createSignal(false);
+  const [roleBusy, setRoleBusy] = createSignal(false);
+  // Drag-to-reorder: id of the role being dragged.
+  const [dragRoleId, setDragRoleId] = createSignal<string | null>(null);
+  // The role id the dragged role would be inserted ABOVE (drop indicator). The
+  // @everyone id here means "drop at the end of the normal roles".
+  const [dragOverId, setDragOverId] = createSignal<string | null>(null);
+  // Custom confirmation dialog (replaces the native window.confirm box).
+  const [confirmDialog, setConfirmDialog] = createSignal<ConfirmOpts | null>(null);
+  let confirmResolver: ((ok: boolean) => void) | null = null;
   const [connected, setConnected] = createSignal(true);
   let wasConnected = true;
   let bottomRef: HTMLDivElement | undefined;
@@ -368,6 +453,9 @@ function Home(props: { home: ServerSession }) {
   // --- taverns: permissions, identity, members, voice, mod alerts ---
   const [myPerms, setMyPerms] = createSignal<api.MyPerms | null>(null);
   const [tavern, setTavern] = createSignal<api.TavernDto | null>(null);
+  // serverId -> icon data URL, so the rail shows every tavern's icon (not just
+  // the active one). Populated in the background per connected server.
+  const [tavernIcons, setTavernIcons] = createSignal<Record<string, string>>({});
   const [members, setMembers] = createSignal<api.MemberDto[]>([]);
   const [showMembers, setShowMembers] = createSignal(false);
   const [createChannelOpen, setCreateChannelOpen] = createSignal(false);
@@ -386,7 +474,17 @@ function Home(props: { home: ServerSession }) {
   const refreshGroups = () => api.listGroups().then(setGroups);
   const refreshPerms = () =>
     api.getMyPermissions().then(setMyPerms).catch(() => setMyPerms(null));
-  const refreshTavern = () => api.getTavern().then(setTavern).catch(() => {});
+  const refreshTavern = () =>
+    api
+      .getTavern()
+      .then((t) => {
+        setTavern(t);
+        // Cache the active server's icon so the rail keeps showing it after you
+        // navigate away from the tavern.
+        const id = activeServerId();
+        setTavernIcons((prev) => ({ ...prev, [id]: t.iconUrl }));
+      })
+      .catch(() => {});
   const refreshMembers = (groupId: string | null) => {
     if (!groupId) return setMembers([]);
     api.listMembers(groupId).then(setMembers).catch(() => setMembers([]));
@@ -473,6 +571,15 @@ function Home(props: { home: ServerSession }) {
   };
 
   const participantsFor = (groupId: string) => voiceParticipants()[groupId] ?? [];
+  /** Label for the voice panel: the voice channel's name, or the DM peer. */
+  const voiceLabel = () => {
+    const id = activeVoice();
+    if (!id) return "";
+    const g = groups().find((x) => x.id === id);
+    if (g) return g.name;
+    if (activeConv()?.groupId === id) return activeConv()!.peerName;
+    return "Voice";
+  };
 
   function appendIfActive(msg: UiMessage) {
     if (msg.groupId !== activeId()) return;
@@ -565,6 +672,22 @@ function Home(props: { home: ServerSession }) {
   }
 
   onMount(async () => {
+    // Suppress the native webview right-click menu app-wide so our custom menus
+    // are the only context menus. (Ctrl+V etc. still work in inputs.)
+    const blockNativeMenu = (e: MouseEvent) => e.preventDefault();
+    document.addEventListener("contextmenu", blockNativeMenu);
+    onCleanup(() => document.removeEventListener("contextmenu", blockNativeMenu));
+
+    // Esc closes any open custom menu / the full-screen tavern settings page.
+    const onEsc = (e: KeyboardEvent) => {
+      if (e.key !== "Escape") return;
+      closeMenu();
+      if (confirmDialog()) return resolveConfirm(false);
+      if (tavernSettingsOpen() && guardUnsaved()) setTavernSettingsOpen(false);
+    };
+    document.addEventListener("keydown", onEsc);
+    onCleanup(() => document.removeEventListener("keydown", onEsc));
+
     api
       .getSettings()
       .then((s) => {
@@ -713,6 +836,14 @@ function Home(props: { home: ServerSession }) {
     );
     unlisteners.push(
       await api.onConnection(({ serverId, connected }) => {
+        // Cache any connected (non-home) server's icon for the rail, even if it
+        // isn't the active one.
+        if (connected && serverId !== "home") {
+          api
+            .getTavernFor(serverId)
+            .then((t) => setTavernIcons((prev) => ({ ...prev, [serverId]: t.iconUrl })))
+            .catch(() => {});
+        }
         if (serverId !== activeServerId()) return;
         if (connected && !wasConnected) loadHistory();
         wasConnected = connected;
@@ -763,6 +894,15 @@ function Home(props: { home: ServerSession }) {
     loadHistory();
   });
 
+  // Backstop: when the rail's server list changes, (re)fetch icons so every
+  // tavern glyph shows its icon. The connection-status hook covers the common
+  // case; this catches launch races. Depends only on the server list (not the
+  // icon cache) to avoid a write-read reactive loop.
+  createEffect(() => {
+    railServers();
+    refreshRailIcons();
+  });
+
   createEffect(() => {
     messages();
     bottomRef?.scrollIntoView({ behavior: "smooth" });
@@ -771,7 +911,6 @@ function Home(props: { home: ServerSession }) {
   const activeGroup = () => groups().find((g) => g.id === activeId());
   const isPrivate = () => activeGroup()?.kind === "private";
   const publicGroups = () => groups().filter((g) => g.kind !== "private");
-  const privateGroups = () => groups().filter((g) => g.kind === "private");
 
   // Refresh the member list when the member panel is open and the active public
   // channel changes (members are server-scoped; any public channel works).
@@ -779,7 +918,34 @@ function Home(props: { home: ServerSession }) {
     const id = activeId();
     if (showMembers() && view() === "server" && id && !isPrivate()) {
       refreshMembers(id);
+      refreshRoles(); // needed to group hoisted roles + color member names
     }
+  });
+
+  // Header prompt: Yggdrasil underpins almost everything (taverns, internet DMs),
+  // so nudge the user to set it up until it's connected, then clear it.
+  createEffect(() => {
+    const m = mesh();
+    if (!m) return; // status not loaded yet
+    if (m.running) {
+      dismissKey("ygg-setup");
+      return;
+    }
+    // Yellow (warn): without Yggdrasil connected you effectively can't use the
+    // app's cross-device features, so it's an action-needed prompt with a link
+    // straight to the network settings.
+    notify({
+      key: "ygg-setup",
+      severity: "warn",
+      message: m.available
+        ? "Yggdrasil networking isn't connected - most features need it."
+        : "Yggdrasil networking isn't available in this build - most cross-device features need it.",
+      actionLabel: "Click here to access settings",
+      onAction: () => {
+        setSettingsTab("network");
+        setSettingsOpen(true);
+      },
+    });
   });
 
   /** Open (or re-select) a DM with a contact: ensure the cross-server DM exists,
@@ -829,6 +995,522 @@ function Home(props: { home: ServerSession }) {
     });
   }
 
+  // --- custom context menu + contact/member actions ---
+  /** Left-click a contact: open their profile card near the cursor. */
+  function openProfileCard(c: api.ContactDto, e: MouseEvent) {
+    e.preventDefault();
+    setMenu(null);
+    setProfileCard({ c, x: e.clientX, y: e.clientY });
+  }
+  /** Open the custom context menu at the cursor with the given items. */
+  function showMenu(e: MouseEvent, items: MenuItem[]) {
+    e.preventDefault();
+    setProfileCard(null);
+    setMenu({ x: e.clientX, y: e.clientY, items });
+  }
+  const closeMenu = () => setMenu(null);
+
+  /** Message a contact: dismiss overlays and open the DM conversation. */
+  async function messageContact(c: api.ContactDto) {
+    setProfileCard(null);
+    closeMenu();
+    await openDm(c);
+  }
+  /** Call a contact: open the DM, then start a voice call on its group. */
+  async function callContact(c: api.ContactDto) {
+    setProfileCard(null);
+    closeMenu();
+    await openDm(c);
+    const conv = activeConv();
+    if (conv) await joinVoiceChannel(conv.groupId);
+  }
+  async function removeFriend(c: api.ContactDto) {
+    closeMenu();
+    try {
+      await api.removeContact(c.id);
+      await refreshContacts();
+    } catch (e) {
+      setError(String(e));
+    }
+  }
+  const copyText = (t: string) => navigator.clipboard.writeText(t).catch(() => {});
+
+  /** Right-click menu for a contact (DM/friends list). */
+  function contactMenuItems(c: api.ContactDto): MenuItem[] {
+    return [
+      { label: "Profile", icon: faUserGroup, onClick: () => setProfileCard({ c, x: menu()!.x, y: menu()!.y }) },
+      { label: "Message", icon: faComments, onClick: () => void messageContact(c) },
+      { label: "Start a Call", icon: faPhone, onClick: () => void callContact(c) },
+      { label: "Copy User ID", icon: faPlus, sep: true, onClick: () => copyText(c.id) },
+      { label: "Remove Friend", danger: true, onClick: () => void removeFriend(c) },
+      {
+        label: isBlocked(c.id) ? "Unblock" : "Block",
+        danger: !isBlocked(c.id),
+        onClick: () => {
+          closeMenu();
+          void toggleBlocked(c);
+        },
+      },
+    ];
+  }
+
+  /** Right-click menu for a tavern member, gated by the viewer's permissions.
+   * (Profile/Message/Call to arbitrary members need the contact-identity link;
+   * that arrives with federation - for now this covers Mention + moderation.) */
+  function memberMenuItems(m: api.MemberDto): MenuItem[] {
+    const items: MenuItem[] = [
+      {
+        label: "Mention",
+        onClick: () => {
+          closeMenu();
+          setDraft(`${draft()}@${m.displayName} `);
+        },
+      },
+      { label: "Copy User ID", icon: faPlus, onClick: () => copyText(m.userId) },
+    ];
+    // Can't moderate the server owner (can() already grants owner/admin).
+    if (!m.isOwner) {
+      if (activeId() && can(api.PERM.KICK_MEMBERS)) {
+        items.push({
+          label: "Kick",
+          danger: true,
+          sep: true,
+          onClick: () => {
+            closeMenu();
+            api
+              .kickMember(activeId()!, m.userId)
+              .then(() => refreshMembers(activeId()))
+              .catch((e) => setError(String(e)));
+          },
+        });
+      }
+      if (can(api.PERM.BAN_MEMBERS)) {
+        items.push({
+          label: "Ban",
+          danger: true,
+          sep: !can(api.PERM.KICK_MEMBERS),
+          onClick: () => {
+            closeMenu();
+            api
+              .banMember(m.userId)
+              .then(() => refreshMembers(activeId()))
+              .catch((e) => setError(String(e)));
+          },
+        });
+      }
+    }
+    return items;
+  }
+
+  /** Open the full-screen tavern settings page, prefilled with current values. */
+  function openTavernSettings() {
+    const t = tavern();
+    setTavName(t?.name ?? "");
+    setTavDesc(t?.description ?? "");
+    setTavIcon(t?.iconUrl ?? "");
+    setTavBanner(t?.bannerUrl ?? "");
+    setSettingsSection("overview");
+    setTavernSettingsOpen(true);
+  }
+  /** Switch settings section, lazily loading that section's data. Blocked while
+   * a role has unsaved changes (see guardUnsaved). */
+  function selectSettingsSection(s: SettingsSection) {
+    if (!guardUnsaved()) return;
+    setSettingsSection(s);
+    if (s === "members") {
+      refreshMembers(activeId());
+      refreshRoles();
+    }
+    if (s === "bans") api.listBans().then(setSettingsBans).catch(() => setSettingsBans([]));
+    if (s === "audit") api.listAudit(200).then(setSettingsAudit).catch(() => setSettingsAudit([]));
+    if (s === "roles") refreshRoles();
+  }
+  async function unbanUser(userId: string) {
+    try {
+      await api.unbanMember(userId);
+      setSettingsBans(await api.listBans());
+    } catch (e) {
+      setError(String(e));
+    }
+  }
+
+  // --- Roles editor -----------------------------------------------------------
+  function refreshRoles() {
+    api.listRoles().then(setRoles).catch(() => setRoles([]));
+  }
+  /** Seed the draft fields from a role (original state). */
+  function seedRoleDraft(r: api.RoleDto) {
+    setRoleDraftName(r.name);
+    setRoleDraftPerms(BigInt(r.permissions || "0"));
+    setRoleDraftColor(r.color);
+    setRoleDraftIcon(r.icon);
+    setRoleDraftHoist(r.hoist);
+    setRoleDraftMentionable(r.mentionable);
+  }
+  /** True while the open editor's draft differs from the saved original. A new
+   * (unsaved) role is always considered dirty until it is created. */
+  function roleDirty(): boolean {
+    const r = editingRole();
+    if (!r) return false;
+    if (!r.id) return true; // brand-new, never saved
+    return (
+      roleDraftName() !== r.name ||
+      roleDraftPerms().toString() !== r.permissions ||
+      roleDraftColor() !== r.color ||
+      roleDraftIcon() !== r.icon ||
+      roleDraftHoist() !== r.hoist ||
+      roleDraftMentionable() !== r.mentionable
+    );
+  }
+  /** Block an action if there are unsaved role changes; toast if so. */
+  function guardUnsaved(): boolean {
+    if (roleDirty()) {
+      notifyTransient({
+        key: "role-unsaved",
+        severity: "warn",
+        message: "You have unsaved role changes - save or reset them first.",
+      });
+      return false;
+    }
+    return true;
+  }
+  /** Open the editor for a role (guarded), seeding the draft from its state. */
+  function editRole(r: api.RoleDto) {
+    if (editingRole()?.id === r.id && !!r.id) return; // already editing it
+    if (!guardUnsaved()) return;
+    setRoleTab("display");
+    setEditingRole(r);
+    seedRoleDraft(r);
+  }
+  /** Begin creating a brand-new role (draft only; saved on "Create"). */
+  function startNewRole() {
+    if (!guardUnsaved()) return;
+    const blank: api.RoleDto = {
+      id: "",
+      name: "new role",
+      permissions: "0",
+      position: 0,
+      isDefault: false,
+      color: "",
+      icon: "",
+      hoist: false,
+      mentionable: false,
+    };
+    setRoleTab("display");
+    setEditingRole(blank);
+    seedRoleDraft(blank);
+  }
+  /** Reset the draft to the saved original; for a new role, discard + close. */
+  function resetRoleDraft() {
+    const r = editingRole();
+    if (!r) return;
+    if (!r.id) {
+      setEditingRole(null);
+      return;
+    }
+    seedRoleDraft(r);
+  }
+  /** Toggle one permission bit in the draft. */
+  function toggleRolePerm(bit: bigint, on: boolean) {
+    setRoleDraftPerms((p) => (on ? p | bit : p & ~bit));
+  }
+  /** Encode a canvas to the most compact alpha-preserving format the webview can
+   * produce: AVIF first (best compression), then WebP, then PNG. `toDataURL`
+   * silently returns PNG when a codec is unsupported, so we verify the MIME of
+   * the result and fall through. All three keep the alpha channel. */
+  function encodeImage(canvas: HTMLCanvasElement): string {
+    for (const type of ["image/avif", "image/webp"]) {
+      const url = canvas.toDataURL(type, 0.9);
+      if (url.startsWith(`data:${type}`)) return url;
+    }
+    return canvas.toDataURL("image/png");
+  }
+  /** Read a picked image, downscale it to fit `w`x`h` (cover-cropped, centered),
+   * and hand back a base64 data URL. Preserves transparency. Rejects non-images
+   * and oversized results. */
+  function downscaleImage(
+    file: File | undefined,
+    w: number,
+    h: number,
+    onDone: (dataUrl: string) => void
+  ) {
+    if (!file) return;
+    if (!file.type.startsWith("image/")) {
+      setError("That file is not an image.");
+      return;
+    }
+    const reader = new FileReader();
+    reader.onload = () => {
+      const img = new Image();
+      img.onload = () => {
+        const canvas = document.createElement("canvas");
+        canvas.width = w;
+        canvas.height = h;
+        // Transparent backing (no fill) so source alpha is preserved.
+        const ctx = canvas.getContext("2d");
+        if (!ctx) return;
+        ctx.clearRect(0, 0, w, h);
+        // Cover-fit: scale so the image fills the box, center-cropped.
+        const scale = Math.max(w / img.width, h / img.height);
+        const dw = img.width * scale;
+        const dh = img.height * scale;
+        ctx.drawImage(img, (w - dw) / 2, (h - dh) / 2, dw, dh);
+        const dataUrl = encodeImage(canvas);
+        if (dataUrl.length > 512 * 1024) {
+          setError("Image is too large even after resizing.");
+          return;
+        }
+        onDone(dataUrl);
+      };
+      img.src = String(reader.result);
+    };
+    reader.readAsDataURL(file);
+  }
+  /** Role icon: a small 64x64 square. */
+  function pickRoleIcon(file: File | undefined) {
+    downscaleImage(file, 64, 64, setRoleDraftIcon);
+  }
+  /** Persist the draft, then close the editor (per the "save = done" UX). */
+  async function saveRole() {
+    const r = editingRole();
+    if (!r) return;
+    const name = roleDraftName().trim();
+    if (!name) {
+      setError("Role name can't be empty.");
+      return;
+    }
+    setRoleBusy(true);
+    try {
+      const write: api.RoleWrite = {
+        name,
+        permissions: roleDraftPerms().toString(),
+        color: roleDraftColor(),
+        icon: roleDraftIcon(),
+        hoist: roleDraftHoist(),
+        mentionable: roleDraftMentionable(),
+      };
+      if (r.id) await api.updateRole(r.id, write);
+      else await api.createRole(write);
+      setEditingRole(null); // close the control box as completion feedback
+      refreshRoles();
+      refreshPerms();
+    } catch (e) {
+      setError(String(e));
+    } finally {
+      setRoleBusy(false);
+    }
+  }
+  /** The list shown in the Roles editor: highest power first, @everyone always
+   * pinned to the very bottom. Reflects the live draft name for the open role. */
+  function roleListOrdered(): api.RoleDto[] {
+    const live = (r: api.RoleDto) =>
+      editingRole()?.id === r.id && r.id ? { ...r, name: roleDraftName() } : r;
+    const rs = roles().map(live);
+    const normal = rs.filter((r) => !r.isDefault);
+    const everyone = rs.filter((r) => r.isDefault);
+    return [...normal, ...everyone];
+  }
+  /** Look up a role's name by id (for member role chips). */
+  function roleName(id: string): string {
+    return roles().find((r) => r.id === id)?.name ?? "role";
+  }
+  /** A member's highest (most powerful) assigned non-default role, or null. */
+  function memberTopRole(m: api.MemberDto): api.RoleDto | null {
+    let best: api.RoleDto | null = null;
+    for (const rid of m.roleIds) {
+      const role = roles().find((r) => r.id === rid && !r.isDefault);
+      if (role && (!best || role.position > best.position)) best = role;
+    }
+    return best;
+  }
+  /** Group members into hoisted-role sections (highest power first), with a
+   * catch-all "Members" section for everyone whose roles aren't hoisted. */
+  function memberSections(): { id: string; title: string; color: string; members: api.MemberDto[] }[] {
+    const hoisted = roles().filter((r) => r.hoist && !r.isDefault); // already pos desc
+    const sections = hoisted.map((r) => ({
+      id: r.id,
+      title: r.name,
+      color: r.color,
+      members: [] as api.MemberDto[],
+    }));
+    const rest: api.MemberDto[] = [];
+    for (const m of members()) {
+      let best: api.RoleDto | null = null;
+      for (const rid of m.roleIds) {
+        const role = hoisted.find((r) => r.id === rid);
+        if (role && (!best || role.position > best.position)) best = role;
+      }
+      if (best) sections.find((s) => s.id === best!.id)!.members.push(m);
+      else rest.push(m);
+    }
+    const out = sections.filter((s) => s.members.length);
+    if (rest.length) out.push({ id: "__rest", title: "Members", color: "", members: rest });
+    return out;
+  }
+  /** Assign a role to a member, then refresh the member list. */
+  async function assignRoleToMember(userId: string, roleId: string) {
+    if (!roleId) return;
+    try {
+      await api.assignRole(userId, roleId);
+      refreshMembers(activeId());
+    } catch (e) {
+      setError(String(e));
+    }
+  }
+  /** Remove a role from a member, then refresh the member list. */
+  async function unassignRoleFromMember(userId: string, roleId: string) {
+    try {
+      await api.unassignRole(userId, roleId);
+      refreshMembers(activeId());
+    } catch (e) {
+      setError(String(e));
+    }
+  }
+  /** Drop the dragged role before `targetId`, then persist the new order. A
+   * targetId that isn't a normal role (e.g. the @everyone id) lands at the end. */
+  async function dropRoleBefore(targetId: string | null) {
+    const dragged = dragRoleId();
+    setDragRoleId(null);
+    setDragOverId(null);
+    if (!dragged || dragged === targetId) return;
+    const normal = roles().filter((r) => !r.isDefault);
+    const ids = normal.map((r) => r.id).filter((id) => id !== dragged);
+    const at = targetId ? ids.indexOf(targetId) : ids.length;
+    ids.splice(at < 0 ? ids.length : at, 0, dragged);
+    // Optimistic local reorder so the list updates immediately.
+    const byId = new Map(roles().map((r) => [r.id, r]));
+    const reordered = [
+      ...ids.map((id) => byId.get(id)!).filter(Boolean),
+      ...roles().filter((r) => r.isDefault),
+    ];
+    setRoles(reordered);
+    try {
+      await api.reorderRoles(ids);
+      refreshRoles();
+      refreshPerms();
+    } catch (e) {
+      setError(String(e));
+      refreshRoles();
+    }
+  }
+
+  /** Delete the edited role after confirming. */
+  async function deleteRoleFlow(r: api.RoleDto) {
+    const ok = await askConfirm({
+      title: "Delete role",
+      body: `Delete the "${r.name}" role? Members keep their other roles; this can't be undone.`,
+      confirmLabel: "Delete role",
+      danger: true,
+    });
+    if (!ok) return;
+    try {
+      await api.deleteRole(r.id);
+      if (editingRole()?.id === r.id) setEditingRole(null);
+      refreshRoles();
+    } catch (e) {
+      setError(String(e));
+    }
+  }
+  async function saveTavernSettings(e: Event) {
+    e.preventDefault();
+    try {
+      const t = await api.updateTavern(
+        tavName().trim(),
+        tavIcon(),
+        tavDesc().trim(),
+        tavBanner()
+      );
+      setTavern(t);
+      setTavernIcons((prev) => ({ ...prev, [activeServerId()]: t.iconUrl }));
+    } catch (err) {
+      setError(String(err));
+    }
+  }
+
+  /** Show the custom confirm dialog; resolves true if the user confirms. */
+  function askConfirm(opts: ConfirmOpts): Promise<boolean> {
+    return new Promise((resolve) => {
+      confirmResolver = resolve;
+      setConfirmDialog(opts);
+    });
+  }
+  /** Resolve and dismiss the active confirm dialog. */
+  function resolveConfirm(ok: boolean) {
+    setConfirmDialog(null);
+    const r = confirmResolver;
+    confirmResolver = null;
+    r?.(ok);
+  }
+
+  /** Delete the active tavern (host-only; stops it + wipes its data). */
+  async function deleteTavernFlow() {
+    closeMenu();
+    const id = activeServerId();
+    if (id === "home") return;
+    const ok = await askConfirm({
+      title: "Delete tavern",
+      body: "Delete this tavern? This stops it and permanently erases its data. This can't be undone.",
+      confirmLabel: "Delete tavern",
+      danger: true,
+    });
+    if (!ok) return;
+    try {
+      await api.deleteTavern(id);
+      setServers((prev) => prev.filter((s) => s.id !== id));
+      await enterDms();
+    } catch (err) {
+      setError(String(err));
+    }
+  }
+
+  /** The tavern (server) management menu - opened by clicking the tavern name or
+   * right-clicking the channel list. Items are gated by the viewer's perms. */
+  function tavernMenuItems(): MenuItem[] {
+    const items: MenuItem[] = [];
+    if (can(api.PERM.MANAGE_CHANNELS)) {
+      items.push({
+        label: "Create Channel",
+        icon: faPlus,
+        onClick: () => {
+          closeMenu();
+          setCreateChannelOpen(true);
+        },
+      });
+      items.push({
+        label: "Create Category",
+        icon: faPlus,
+        onClick: () => {
+          closeMenu();
+          notifyTransient({ severity: "info", message: "Categories are coming soon." }, 2500);
+        },
+      });
+    }
+    items.push({
+      label: "Invite People",
+      icon: faUserPlus,
+      sep: items.length > 0,
+      onClick: () => {
+        closeMenu();
+        showInvite();
+      },
+    });
+    if (can(api.PERM.MANAGE_SERVER)) {
+      items.push({
+        label: "Server Settings",
+        icon: faGear,
+        sep: true,
+        onClick: () => {
+          closeMenu();
+          openTavernSettings();
+        },
+      });
+    }
+    if (myPerms()?.isOwner) {
+      items.push({ label: "Delete Tavern", danger: true, sep: true, onClick: deleteTavernFlow });
+    }
+    return items;
+  }
+
   /** Show the Direct Messages home (backed by the hidden home server). */
   async function enterDms() {
     setView("dms");
@@ -864,17 +1546,20 @@ function Home(props: { home: ServerSession }) {
     }
   }
 
-  /** Join (or connect to) another tavern; it stays connected in the background. */
+  /** Join (or connect to) another tavern; it stays connected in the background.
+   * Taverns use password-less KEY auth: register binds this server's derived
+   * identity key (empty password = key-only account), then login signs a
+   * challenge. The user never types a per-tavern password. */
   async function addServer(s: ServerSession, registerFirst: boolean, inviteToken?: string) {
     await api.connect(s.id, s.endpoint, s.cert ?? undefined);
     if (registerFirst) {
       try {
-        await api.register(s.username, s.password, s.username, inviteToken);
+        await api.register(s.username, "", s.username, inviteToken);
       } catch {
         /* already registered - fall through to login */
       }
     }
-    await api.login(s.username, s.password, "Desktop");
+    await api.loginWithKey(s.username, "Desktop");
     setServers((prev) => [...prev.filter((p) => p.id !== s.id), s]);
     setActiveServerId(s.id);
     setView("server");
@@ -895,10 +1580,17 @@ function Home(props: { home: ServerSession }) {
         endpoint: t.endpoint,
         cert: t.cert,
         username: props.home.username,
-        password: props.home.password,
+        password: "", // taverns use key auth; no password
       },
       true
     );
+    // Persist the name into the tavern's identity (we're now its owner), so the
+    // sidebar header shows it instead of the generic "Channels".
+    try {
+      setTavern(await api.updateTavern(name));
+    } catch {
+      /* best-effort; the rail glyph still shows the name */
+    }
   }
 
   /** On launch, re-spawn any taverns this client hosts and attach them to the
@@ -913,7 +1605,7 @@ function Home(props: { home: ServerSession }) {
     for (const t of list) {
       try {
         await api.connect(t.id, t.endpoint, t.cert ?? undefined);
-        await api.login(props.home.username, props.home.password, "Desktop");
+        await api.loginWithKey(props.home.username, "Desktop");
         setServers((prev) =>
           prev.some((p) => p.id === t.id)
             ? prev
@@ -1043,28 +1735,35 @@ function Home(props: { home: ServerSession }) {
     }
   }
 
-  async function startDm(e: Event) {
-    e.preventDefault();
-    const name = dmName().trim();
-    if (!name) return;
-    setDmName("");
-    setError(null);
-    try {
-      const group = await api.startDm(name);
-      await refreshGroups();
-      setActiveId(group.id);
-    } catch (err) {
-      setError(String(err));
-    }
-  }
-
   const showInvite = () =>
     api
       .createInviteKey(activeServerId())
       .then((key) => setInvite({ key, error: "" }))
       .catch((e) => setInvite({ key: "", error: String(e) }));
 
-  const serverGlyph = (s: ServerSession) => s.name.slice(0, 2).toUpperCase();
+  const serverGlyph = (s: ServerSession) => {
+    // Prefer the live active-tavern icon, else the cached per-server icon, else
+    // fall back to initials. The cache keeps the icon on the rail after you
+    // navigate away from the tavern.
+    const icon =
+      s.id === activeServerId() && tavern()?.iconUrl
+        ? tavern()!.iconUrl
+        : tavernIcons()[s.id];
+    if (icon) return <img class="rail-icon" src={icon} alt={s.name} />;
+    return s.name.slice(0, 2).toUpperCase();
+  };
+  /** Fetch every connected server's tavern icon into the rail cache (background;
+   * does not switch the active session). Best-effort per server. */
+  function refreshRailIcons() {
+    for (const s of railServers()) {
+      api
+        .getTavernFor(s.id)
+        .then((t) =>
+          setTavernIcons((prev) => ({ ...prev, [s.id]: t.iconUrl }))
+        )
+        .catch(() => {});
+    }
+  }
   const railServers = () => servers().filter((s) => s.id !== "home");
 
   /** The Direct Messages main pane: friends list, friend requests, or a (scaffold)
@@ -1081,7 +1780,16 @@ function Home(props: { home: ServerSession }) {
         </span>
         <span class="header-right">
           <Show when={activeConv()}>
-            <button class="icon-btn ghost" title="Add friends to this DM (group DM)" disabled>
+            <Show when={activeVoice() !== activeConv()!.groupId}>
+              <button
+                class="header-icon-btn"
+                title="Start a call"
+                onClick={() => joinVoiceChannel(activeConv()!.groupId)}
+              >
+                <Fa icon={faPhone} />
+              </button>
+            </Show>
+            <button class="header-icon-btn" title="Add friends to this DM (group DM)" disabled>
               <Fa icon={faUserPlus} />
             </button>
           </Show>
@@ -1096,7 +1804,13 @@ function Home(props: { home: ServerSession }) {
             </Show>
             <For each={contacts()}>
               {(c) => (
-                <div class="contact-row">
+                // Click opens the profile card; right-click the quick menu.
+                <button
+                  class="contact-row contact-row-click"
+                  onClick={(e) => openProfileCard(c, e)}
+                  onContextMenu={(e) => showMenu(e, contactMenuItems(c))}
+                >
+                  <span class="contact-avatar">{(c.name[0] ?? "?").toUpperCase()}</span>
                   <div class="contact-meta">
                     <span class="contact-name">
                       {c.name}
@@ -1109,15 +1823,7 @@ function Home(props: { home: ServerSession }) {
                     </span>
                     <span class="contact-fp">{c.fingerprint}</span>
                   </div>
-                  <div class="contact-actions">
-                    <button class="btn-sm" disabled={isBlocked(c.id)} onClick={() => openDm(c)}>
-                      Message
-                    </button>
-                    <button class="btn-secondary btn-sm" onClick={() => toggleBlocked(c)}>
-                      {isBlocked(c.id) ? "Unblock" : "Block"}
-                    </button>
-                  </div>
-                </div>
+                </button>
               )}
             </For>
             {/* Outbound requests appear as placeholder friends until accepted;
@@ -1262,6 +1968,46 @@ function Home(props: { home: ServerSession }) {
               <p class="empty-note center">Opening a secure DM with {activeConv()?.peerName}...</p>
             }
           >
+            {/* Call header (when a voice call is active in this DM): both
+                avatars + mic/cam/screen/hangup. Media is the WebRTC TODO. */}
+            <Show when={activeConv() && activeVoice() === activeConv()!.groupId}>
+              <div class="call-stage">
+                <div class="call-avatars">
+                  <div class="call-avatar">
+                    {(props.home.username[0] ?? "?").toUpperCase()}
+                  </div>
+                  <div class="call-avatar">
+                    {(activeConv()?.peerName[0] ?? "?").toUpperCase()}
+                  </div>
+                </div>
+                <div class="call-controls">
+                  <button
+                    class={`voice-toggle ${localVoice().muted ? "off" : ""}`}
+                    title={localVoice().muted ? "Unmute" : "Mute"}
+                    onClick={toggleMute}
+                  >
+                    <Fa icon={localVoice().muted ? faMicrophoneSlash : faMicrophone} />
+                  </button>
+                  <button
+                    class={`voice-toggle ${localVoice().cameraOn ? "on" : ""}`}
+                    title="Toggle camera"
+                    onClick={toggleCamera}
+                  >
+                    <Fa icon={faVideo} />
+                  </button>
+                  <button
+                    class={`voice-toggle ${localVoice().screenOn ? "on" : ""}`}
+                    title="Share screen"
+                    onClick={toggleScreen}
+                  >
+                    <Fa icon={faDesktop} />
+                  </button>
+                  <button class="voice-toggle danger" title="Leave call" onClick={leaveVoiceChannel}>
+                    <Fa icon={faPhoneSlash} />
+                  </button>
+                </div>
+              </div>
+            </Show>
             <div class="messages">
               <For
                 each={messages()}
@@ -1293,19 +2039,80 @@ function Home(props: { home: ServerSession }) {
               </For>
               <div ref={bottomRef} />
             </div>
-            <form class="composer" onSubmit={send}>
-              <input
-                value={draft()}
-                onInput={(e) => setDraft(e.currentTarget.value)}
-                placeholder={`Message ${activeConv()?.peerName ?? ""}`}
-              />
-              <button>Send</button>
-            </form>
+            <Composer placeholder={`Message ${activeConv()?.peerName ?? ""}`} />
           </Show>
         </Match>
       </Switch>
     </main>
   );
+
+  /** The message composer: one rounded box with a paperclip attach, the input,
+   * and an actions cluster (3 ascending bars that morph into emoji/gif/sticker/
+   * send on hover). Enter or the send button submits. Attach/emoji/gif/stickers
+   * are scaffolded (the features aren't built yet). */
+  const Composer = (cp: { placeholder: string; disabled?: boolean }) => {
+    const soon = (what: string) =>
+      notifyTransient({ severity: "info", message: `${what} are coming soon.` }, 2500);
+    return (
+      <form class="composer" onSubmit={send}>
+        <button
+          type="button"
+          class="composer-attach"
+          title="Attach a file"
+          disabled={cp.disabled}
+          onClick={() => soon("File attachments")}
+        >
+          <Fa icon={faPaperclip} />
+        </button>
+        <input
+          class="composer-input"
+          value={draft()}
+          onInput={(e) => setDraft(e.currentTarget.value)}
+          placeholder={cp.placeholder}
+          disabled={cp.disabled}
+        />
+        <div class="composer-actions">
+          <div class="composer-toolbar">
+            <button
+              type="button"
+              class="composer-tool"
+              title="Emoji"
+              disabled={cp.disabled}
+              onClick={() => soon("Emoji")}
+            >
+              <Fa icon={faFaceSmile} />
+            </button>
+            <button
+              type="button"
+              class="composer-tool"
+              title="GIF"
+              disabled={cp.disabled}
+              onClick={() => soon("GIFs")}
+            >
+              GIF
+            </button>
+            <button
+              type="button"
+              class="composer-tool"
+              title="Stickers"
+              disabled={cp.disabled}
+              onClick={() => soon("Stickers")}
+            >
+              <Fa icon={faNoteSticky} />
+            </button>
+            <button type="submit" class="composer-send" title="Send" disabled={cp.disabled}>
+              <Fa icon={faPaperPlane} />
+            </button>
+          </div>
+          <button type="submit" class="composer-bars" title="Send" disabled={cp.disabled} aria-label="Send">
+            <i />
+            <i />
+            <i />
+          </button>
+        </div>
+      </form>
+    );
+  };
 
   return (
     <div class="app">
@@ -1339,7 +2146,13 @@ function Home(props: { home: ServerSession }) {
 
       <div class="chat">
         <aside class="sidebar">
-          <div class="sidebar-scroll">
+          <div
+            class="sidebar-scroll"
+            onContextMenu={(e) => {
+              // Right-click anywhere in a tavern's channel list → management menu.
+              if (view() === "server") showMenu(e, tavernMenuItems());
+            }}
+          >
             <Show
               when={view() === "server"}
               fallback={
@@ -1390,8 +2203,25 @@ function Home(props: { home: ServerSession }) {
                 </>
               }
             >
-              <div class="sidebar-header sidebar-header-row">
-                <span>{tavern()?.name || "Channels"}</span>
+              {/* Optional wide banner atop the channel list. */}
+              <Show when={tavern()?.bannerUrl}>
+                <div class="tavern-banner">
+                  <img src={tavern()!.bannerUrl} alt="" />
+                </div>
+              </Show>
+              {/* Clickable tavern header → management menu (Discord-style). */}
+              <div class={`tavern-header-bar ${tavern()?.bannerUrl ? "with-banner" : ""}`}>
+                <button
+                  class="tavern-header"
+                  title="Tavern menu"
+                  onClick={(e) => showMenu(e, tavernMenuItems())}
+                >
+                  <Show when={tavern()?.iconUrl}>
+                    <img class="tavern-header-icon" src={tavern()!.iconUrl} alt="" />
+                  </Show>
+                  <span class="tavern-header-name">{tavern()?.name || "Tavern"}</span>
+                  <Fa icon={faChevronDown} />
+                </button>
                 <Show when={can(api.PERM.MANAGE_CHANNELS)}>
                   <button
                     class="channel-add-btn"
@@ -1472,64 +2302,21 @@ function Home(props: { home: ServerSession }) {
                 )}
               </For>
 
-              <Show when={activeVoice()}>
-                <div class="voice-bar">
-                  <span class="voice-bar-label">
-                    <Fa icon={faVolumeHigh} /> Voice connected
-                  </span>
-                  <div class="voice-toggles">
-                    <button
-                      class={`voice-toggle ${localVoice().muted ? "off" : ""}`}
-                      title={localVoice().muted ? "Unmute" : "Mute"}
-                      onClick={toggleMute}
-                    >
-                      <Fa icon={localVoice().muted ? faMicrophoneSlash : faMicrophone} />
-                    </button>
-                    <button
-                      class={`voice-toggle ${localVoice().cameraOn ? "on" : ""}`}
-                      title="Toggle camera"
-                      onClick={toggleCamera}
-                    >
-                      <Fa icon={faVideo} />
-                    </button>
-                    <button
-                      class={`voice-toggle ${localVoice().screenOn ? "on" : ""}`}
-                      title="Share screen"
-                      onClick={toggleScreen}
-                    >
-                      <Fa icon={faDesktop} />
-                    </button>
-                    <button
-                      class="voice-toggle danger"
-                      title="Disconnect"
-                      onClick={leaveVoiceChannel}
-                    >
-                      <Fa icon={faPhoneSlash} />
-                    </button>
-                  </div>
-                </div>
+              {/* Empty-state CTA so creating the first channel is obvious. DMs do
+                  NOT live in a tavern's sidebar - they're in the Direct Messages
+                  view (the home rail button); you start one from a contact. */}
+              <Show
+                when={
+                  textChannels().length === 0 &&
+                  voiceChannels().length === 0 &&
+                  can(api.PERM.MANAGE_CHANNELS)
+                }
+              >
+                <button class="invite-btn" onClick={() => setCreateChannelOpen(true)}>
+                  <Fa icon={faPlus} />
+                  Create a channel
+                </button>
               </Show>
-
-              <div class="sidebar-header">Direct messages</div>
-              <For each={privateGroups()}>
-                {(g) => (
-                  <button
-                    class={`channel ${g.id === activeId() ? "active" : ""}`}
-                    onClick={() => setActiveId(g.id)}
-                  >
-                    <span class="hash" />
-                    {g.name}
-                  </button>
-                )}
-              </For>
-              <form class="dm-form" onSubmit={startDm}>
-                <input
-                  value={dmName()}
-                  onInput={(e) => setDmName(e.currentTarget.value)}
-                  placeholder="username..."
-                />
-                <button title="Start encrypted DM">+ DM</button>
-              </form>
               <button
                 class="invite-btn"
                 title="Create a shareable invite key (tavern owner only)"
@@ -1543,6 +2330,47 @@ function Home(props: { home: ServerSession }) {
               </Show>
             </Show>
           </div>
+
+          {/* Voice/call panel sits directly above the user pill (both views),
+              like Discord's "Voice Connected" box. */}
+          <Show when={activeVoice()}>
+            <div class="voice-panel">
+              <div class="voice-panel-row">
+                <div class="voice-panel-info">
+                  <span class="voice-panel-status">
+                    <Fa icon={faVolumeHigh} /> Voice Connected
+                  </span>
+                  <span class="voice-panel-where">{voiceLabel()}</span>
+                </div>
+                <button class="voice-panel-hangup" title="Disconnect" onClick={leaveVoiceChannel}>
+                  <Fa icon={faPhoneSlash} />
+                </button>
+              </div>
+              <div class="voice-panel-actions">
+                <button
+                  class={`voice-toggle ${localVoice().muted ? "off" : ""}`}
+                  title={localVoice().muted ? "Unmute" : "Mute"}
+                  onClick={toggleMute}
+                >
+                  <Fa icon={localVoice().muted ? faMicrophoneSlash : faMicrophone} />
+                </button>
+                <button
+                  class={`voice-toggle ${localVoice().cameraOn ? "on" : ""}`}
+                  title="Toggle camera"
+                  onClick={toggleCamera}
+                >
+                  <Fa icon={faVideo} />
+                </button>
+                <button
+                  class={`voice-toggle ${localVoice().screenOn ? "on" : ""}`}
+                  title="Share screen"
+                  onClick={toggleScreen}
+                >
+                  <Fa icon={faDesktop} />
+                </button>
+              </div>
+            </div>
+          </Show>
 
           <div class="user-card">
             <div class="user-avatar">{(props.home.username[0] ?? "?").toUpperCase()}</div>
@@ -1607,61 +2435,64 @@ function Home(props: { home: ServerSession }) {
               <div ref={bottomRef} />
             </div>
 
-            <form class="composer" onSubmit={send}>
-              <input
-                value={draft()}
-                onInput={(e) => setDraft(e.currentTarget.value)}
-                placeholder={
-                  activeGroup()
-                    ? `Message ${isPrivate() ? " " : "#"}${activeGroup()!.name}`
-                    : "Select a channel"
-                }
-                disabled={!activeId()}
-              />
-              <button disabled={!activeId()}>Send</button>
-            </form>
+            <Composer
+              placeholder={
+                activeGroup()
+                  ? `Message ${isPrivate() ? "" : "#"}${activeGroup()!.name}`
+                  : "Select a channel"
+              }
+              disabled={!activeId()}
+            />
           </main>
         </Show>
 
         <Show when={view() === "server" && showMembers() && !isPrivate()}>
           <aside class="members-panel">
-            <div class="sidebar-header">Members — {members().length}</div>
-            <For each={members()} fallback={<div class="sidebar-empty">No members.</div>}>
-              {(m) => (
-                <div class="member-row">
-                  <span class={`member-dot ${m.online ? "online" : ""}`} />
-                  <span class="member-avatar">
-                    {(m.displayName[0] ?? "?").toUpperCase()}
-                  </span>
-                  <span class="member-name" title={m.username}>
-                    {m.displayName}
-                  </span>
-                  <Show when={m.isOwner}>
-                    <span class="role-badge owner">owner</span>
-                  </Show>
-                  <span class="member-actions">
-                    <Show when={can(api.PERM.KICK_MEMBERS) && !m.isOwner}>
-                      <button
-                        class="member-action"
-                        title="Kick from channel"
-                        onClick={() => activeId() && api.kickMember(activeId()!, m.userId).then(() => refreshMembers(activeId())).catch((e) => setError(String(e)))}
-                      >
-                        kick
-                      </button>
-                    </Show>
-                    <Show when={can(api.PERM.BAN_MEMBERS) && !m.isOwner}>
-                      <button
-                        class="member-action danger"
-                        title="Ban from server"
-                        onClick={() => api.banMember(m.userId).then(() => refreshMembers(activeId())).catch((e) => setError(String(e)))}
-                      >
-                        ban
-                      </button>
-                    </Show>
-                  </span>
-                </div>
-              )}
-            </For>
+            <Show
+              when={members().length}
+              fallback={<div class="sidebar-empty">No members.</div>}
+            >
+              <For each={memberSections()}>
+                {(section) => (
+                  <div class="member-section">
+                    <div class="member-section-header" style={section.color ? { color: section.color } : undefined}>
+                      {section.title} - {section.members.length}
+                    </div>
+                    <For each={section.members}>
+                      {(m) => {
+                        const top = memberTopRole(m);
+                        return (
+                          // Right-click (or click) opens the perm-gated member menu.
+                          <button
+                            class="member-row contact-row-click"
+                            onContextMenu={(e) => showMenu(e, memberMenuItems(m))}
+                            onClick={(e) => showMenu(e, memberMenuItems(m))}
+                          >
+                            <span class={`member-dot ${m.online ? "online" : ""}`} />
+                            <span class="member-avatar">
+                              {(m.displayName[0] ?? "?").toUpperCase()}
+                            </span>
+                            <span
+                              class="member-name"
+                              title={m.username}
+                              style={top?.color ? { color: top.color } : undefined}
+                            >
+                              {m.displayName}
+                            </span>
+                            <Show when={top?.icon}>
+                              <img class="member-role-icon" src={top!.icon} alt="" />
+                            </Show>
+                            <Show when={m.isOwner}>
+                              <span class="role-badge owner">owner</span>
+                            </Show>
+                          </button>
+                        );
+                      }}
+                    </For>
+                  </div>
+                )}
+              </For>
+            </Show>
           </aside>
         </Show>
       </div>
@@ -1673,7 +2504,7 @@ function Home(props: { home: ServerSession }) {
               <div class={`mod-alert-toast ${a.severity}`}>
                 <Fa icon={faTriangleExclamation} />
                 <span>
-                  {a.action} on {a.target || "server"} — {a.reason}
+                  {a.action} on {a.target || "server"} - {a.reason}
                 </span>
               </div>
             )}
@@ -1726,6 +2557,774 @@ function Home(props: { home: ServerSession }) {
                 </button>
               </div>
             </form>
+          </div>
+        </div>
+      </Show>
+
+      {/* Contact popout profile card (click a contact). */}
+      <Show when={profileCard()}>
+        <div class="overlay-dismiss" onClick={() => setProfileCard(null)} onContextMenu={(e) => { e.preventDefault(); setProfileCard(null); }}>
+          <div
+            class="profile-card"
+            style={{
+              left: `${Math.min(profileCard()!.x, window.innerWidth - 280)}px`,
+              top: `${Math.min(profileCard()!.y, window.innerHeight - 220)}px`,
+            }}
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div class="profile-card-head">
+              <div class="profile-card-avatar">
+                {(profileCard()!.c.name[0] ?? "?").toUpperCase()}
+              </div>
+              <div class="profile-card-name">
+                {profileCard()!.c.name}
+                <Show when={profileCard()!.c.verified}>
+                  <span class="verified-badge"> verified</span>
+                </Show>
+              </div>
+            </div>
+            <div class="profile-card-fp">{profileCard()!.c.fingerprint}</div>
+            <div class="profile-card-actions">
+              <button
+                disabled={isBlocked(profileCard()!.c.id)}
+                onClick={() => messageContact(profileCard()!.c)}
+              >
+                <Fa icon={faComments} /> Message
+              </button>
+              <button
+                class="btn-secondary"
+                disabled={isBlocked(profileCard()!.c.id)}
+                onClick={() => callContact(profileCard()!.c)}
+              >
+                <Fa icon={faPhone} /> Call
+              </button>
+              <button class="btn-secondary" onClick={() => toggleBlocked(profileCard()!.c)}>
+                {isBlocked(profileCard()!.c.id) ? "Unblock" : "Block"}
+              </button>
+            </div>
+          </div>
+        </div>
+      </Show>
+
+      {/* Generic custom context menu (contacts + tavern members). */}
+      <Show when={menu()}>
+        <div
+          class="overlay-dismiss"
+          onClick={closeMenu}
+          onContextMenu={(e) => {
+            e.preventDefault();
+            closeMenu();
+          }}
+        >
+          <div
+            class="context-menu"
+            style={{
+              left: `${Math.min(menu()!.x, window.innerWidth - 200)}px`,
+              top: `${Math.min(menu()!.y, window.innerHeight - (menu()!.items.length * 34 + 16))}px`,
+            }}
+            onClick={(e) => e.stopPropagation()}
+          >
+            <For each={menu()!.items}>
+              {(it) => (
+                <>
+                  <Show when={it.sep}>
+                    <div class="context-sep" />
+                  </Show>
+                  <button
+                    class={`context-item ${it.danger ? "danger" : ""}`}
+                    onClick={() => it.onClick()}
+                  >
+                    <Show when={it.icon}>
+                      <Fa icon={it.icon!} />
+                    </Show>
+                    {it.label}
+                  </button>
+                </>
+              )}
+            </For>
+          </div>
+        </div>
+      </Show>
+
+      {/* Tavern (server) settings. */}
+      {/* Full-screen Server (tavern) settings, Discord-style left nav + sections. */}
+      <Show when={tavernSettingsOpen()}>
+        <div class="settings-page">
+          <nav class="settings-nav-col">
+            <div class="settings-nav-title">{tavern()?.name || "Tavern"}</div>
+            <button
+              class={`settings-nav-item ${settingsSection() === "overview" ? "active" : ""}`}
+              onClick={() => selectSettingsSection("overview")}
+            >
+              Overview
+            </button>
+            <div class="settings-nav-group">People</div>
+            <button
+              class={`settings-nav-item ${settingsSection() === "members" ? "active" : ""}`}
+              onClick={() => selectSettingsSection("members")}
+            >
+              Members
+            </button>
+            <button
+              class={`settings-nav-item ${settingsSection() === "roles" ? "active" : ""}`}
+              onClick={() => selectSettingsSection("roles")}
+            >
+              Roles
+            </button>
+            <button
+              class={`settings-nav-item ${settingsSection() === "invites" ? "active" : ""}`}
+              onClick={() => selectSettingsSection("invites")}
+            >
+              Invites
+            </button>
+            <div class="settings-nav-group">Moderation</div>
+            <button
+              class={`settings-nav-item ${settingsSection() === "audit" ? "active" : ""}`}
+              onClick={() => selectSettingsSection("audit")}
+            >
+              Audit Log
+            </button>
+            <button
+              class={`settings-nav-item ${settingsSection() === "bans" ? "active" : ""}`}
+              onClick={() => selectSettingsSection("bans")}
+            >
+              Bans
+            </button>
+            <button
+              class={`settings-nav-item ${settingsSection() === "automod" ? "active" : ""}`}
+              onClick={() => selectSettingsSection("automod")}
+            >
+              AutoMod
+            </button>
+            <div class="settings-nav-sep" />
+            <Show when={myPerms()?.isOwner}>
+              <button class="settings-nav-item danger" onClick={deleteTavernFlow}>
+                Delete Tavern
+              </button>
+            </Show>
+          </nav>
+
+          <button
+            class="settings-close"
+            title="Close (Esc)"
+            onClick={() => guardUnsaved() && setTavernSettingsOpen(false)}
+          >
+            <Fa icon={faXmark} />
+            <span class="settings-close-label">ESC</span>
+          </button>
+
+          <div class="settings-content">
+            <Switch>
+              <Match when={settingsSection() === "overview"}>
+                {(() => {
+                  const ro = () => !can(api.PERM.MANAGE_SERVER);
+                  return (
+                    <>
+                      <h2 class="settings-h">Tavern Profile</h2>
+                      <form onSubmit={saveTavernSettings} class="settings-form">
+                        <div class="field">
+                          <label class="field-label">Tavern name</label>
+                          <input
+                            value={tavName()}
+                            disabled={ro()}
+                            onInput={(e) => setTavName(e.currentTarget.value)}
+                          />
+                        </div>
+
+                        <label class="field-label">Tavern icon</label>
+                        <div class="field-help">
+                          Shown in the server rail and the sidebar header. Resized to 128x128 and
+                          stored with the tavern.
+                        </div>
+                        <div class="role-icon-row">
+                          <span class="tavern-icon-preview">
+                            <Show
+                              when={tavIcon()}
+                              fallback={<span>{(tavName()[0] ?? "?").toUpperCase()}</span>}
+                            >
+                              <img src={tavIcon()} alt="tavern icon" />
+                            </Show>
+                          </span>
+                          <Show when={!ro()}>
+                            <label class="btn-secondary btn-sm file-btn">
+                              {tavIcon() ? "Change icon" : "Choose image"}
+                              <input
+                                type="file"
+                                accept="image/*"
+                                onChange={(e) => {
+                                  downscaleImage(e.currentTarget.files?.[0], 128, 128, setTavIcon);
+                                  e.currentTarget.value = "";
+                                }}
+                              />
+                            </label>
+                            <Show when={tavIcon()}>
+                              <button
+                                type="button"
+                                class="btn-secondary btn-sm btn-danger-text"
+                                onClick={() => setTavIcon("")}
+                              >
+                                Remove icon
+                              </button>
+                            </Show>
+                          </Show>
+                        </div>
+
+                        <label class="field-label">Tavern banner</label>
+                        <div class="field-help">
+                          A wide image shown at the top of the channel list. Resized to 640x240.
+                        </div>
+                        <div class="tavern-banner-edit">
+                          <span class="tavern-banner-preview">
+                            <Show
+                              when={tavBanner()}
+                              fallback={<span class="tavern-banner-empty">No banner</span>}
+                            >
+                              <img src={tavBanner()} alt="tavern banner" />
+                            </Show>
+                          </span>
+                          <Show when={!ro()}>
+                            <div class="role-icon-row">
+                              <label class="btn-secondary btn-sm file-btn">
+                                {tavBanner() ? "Change banner" : "Choose image"}
+                                <input
+                                  type="file"
+                                  accept="image/*"
+                                  onChange={(e) => {
+                                    downscaleImage(
+                                      e.currentTarget.files?.[0],
+                                      640,
+                                      240,
+                                      setTavBanner
+                                    );
+                                    e.currentTarget.value = "";
+                                  }}
+                                />
+                              </label>
+                              <Show when={tavBanner()}>
+                                <button
+                                  type="button"
+                                  class="btn-secondary btn-sm btn-danger-text"
+                                  onClick={() => setTavBanner("")}
+                                >
+                                  Remove banner
+                                </button>
+                              </Show>
+                            </div>
+                          </Show>
+                        </div>
+
+                        <div class="field">
+                          <label class="field-label">Description</label>
+                          <input
+                            value={tavDesc()}
+                            disabled={ro()}
+                            onInput={(e) => setTavDesc(e.currentTarget.value)}
+                          />
+                        </div>
+                        <Show when={!ro()}>
+                          <div class="actions">
+                            <button type="submit">Save changes</button>
+                          </div>
+                        </Show>
+                      </form>
+                    </>
+                  );
+                })()}
+              </Match>
+
+              <Match when={settingsSection() === "members"}>
+                <h2 class="settings-h">Members - {members().length}</h2>
+                <div class="settings-table">
+                  <For each={members()} fallback={<div class="empty-note">No members.</div>}>
+                    {(m) => (
+                      <div class="settings-row">
+                        <span class="member-avatar">
+                          {(m.displayName[0] ?? "?").toUpperCase()}
+                        </span>
+                        <span class="settings-row-main">
+                          <span class="member-name">{m.displayName}</span>
+                          <span class="member-roles">
+                            <span class="contact-fp">@{m.username}</span>
+                            <For each={m.roleIds}>
+                              {(rid) => (
+                                <span class="member-role-chip">
+                                  {roleName(rid)}
+                                  <Show when={can(api.PERM.MANAGE_ROLES)}>
+                                    <button
+                                      class="chip-x"
+                                      title="Remove role"
+                                      onClick={() => unassignRoleFromMember(m.userId, rid)}
+                                    >
+                                      <Fa icon={faXmark} />
+                                    </button>
+                                  </Show>
+                                </span>
+                              )}
+                            </For>
+                          </span>
+                        </span>
+                        <Show when={m.isOwner}>
+                          <span class="role-badge owner">owner</span>
+                        </Show>
+                        <span class="settings-row-actions">
+                          <Show when={can(api.PERM.MANAGE_ROLES) && !m.isOwner}>
+                            <select
+                              class="role-assign-select"
+                              value=""
+                              onChange={(e) => {
+                                assignRoleToMember(m.userId, e.currentTarget.value);
+                                e.currentTarget.value = "";
+                              }}
+                            >
+                              <option value="">+ Role</option>
+                              <For each={roles().filter((r) => !r.isDefault && !m.roleIds.includes(r.id))}>
+                                {(r) => <option value={r.id}>{r.name}</option>}
+                              </For>
+                            </select>
+                          </Show>
+                          <Show when={can(api.PERM.KICK_MEMBERS) && !m.isOwner}>
+                            <button
+                              class="btn-secondary btn-sm"
+                              onClick={() =>
+                                activeId() &&
+                                api
+                                  .kickMember(activeId()!, m.userId)
+                                  .then(() => refreshMembers(activeId()))
+                                  .catch((e) => setError(String(e)))
+                              }
+                            >
+                              Kick
+                            </button>
+                          </Show>
+                          <Show when={can(api.PERM.BAN_MEMBERS) && !m.isOwner}>
+                            <button
+                              class="btn-secondary btn-sm btn-danger-text"
+                              onClick={async () => {
+                                const ok = await askConfirm({
+                                  title: "Ban member",
+                                  body: `Ban ${m.displayName} (@${m.username})? They will be removed and blocked from rejoining this tavern.`,
+                                  confirmLabel: "Ban member",
+                                  danger: true,
+                                });
+                                if (!ok) return;
+                                api
+                                  .banMember(m.userId)
+                                  .then(() => refreshMembers(activeId()))
+                                  .catch((e) => setError(String(e)));
+                              }}
+                            >
+                              Ban
+                            </button>
+                          </Show>
+                        </span>
+                      </div>
+                    )}
+                  </For>
+                </div>
+              </Match>
+
+              <Match when={settingsSection() === "bans"}>
+                <h2 class="settings-h">Bans</h2>
+                <div class="settings-table">
+                  <For each={settingsBans()} fallback={<div class="empty-note">No bans.</div>}>
+                    {(b) => (
+                      <div class="settings-row">
+                        <span class="settings-row-main">
+                          <span class="member-name">{b.userId.slice(0, 12)}</span>
+                          <span class="contact-fp">{b.reason || "(no reason)"}</span>
+                        </span>
+                        <Show when={can(api.PERM.BAN_MEMBERS)}>
+                          <button class="btn-secondary btn-sm" onClick={() => unbanUser(b.userId)}>
+                            Unban
+                          </button>
+                        </Show>
+                      </div>
+                    )}
+                  </For>
+                </div>
+              </Match>
+
+              <Match when={settingsSection() === "audit"}>
+                <h2 class="settings-h">Audit Log</h2>
+                <div class="settings-table">
+                  <For
+                    each={settingsAudit()}
+                    fallback={<div class="empty-note">No audit entries yet.</div>}
+                  >
+                    {(a) => (
+                      <div class="settings-row">
+                        <span class={`audit-verdict ${a.verdict}`}>{a.verdict}</span>
+                        <span class="settings-row-main">
+                          <span class="member-name">
+                            {a.action} {a.target ? `→ ${a.target}` : ""}
+                          </span>
+                          <span class="contact-fp">
+                            {a.actorId.slice(0, 8)} · {new Date(a.createdAtMs).toLocaleString()}
+                            {a.reason ? ` · ${a.reason}` : ""}
+                          </span>
+                        </span>
+                      </div>
+                    )}
+                  </For>
+                </div>
+              </Match>
+
+              <Match when={settingsSection() === "roles"}>
+                <div class="settings-head-row">
+                  <h2 class="settings-h">Roles</h2>
+                  <Show when={can(api.PERM.MANAGE_ROLES)}>
+                    <button class="btn-sm" onClick={startNewRole}>
+                      <Fa icon={faPlus} /> New role
+                    </button>
+                  </Show>
+                </div>
+                <p class="field-help">
+                  Members use the color of their highest role. Drag roles to reorder them -
+                  roles higher in the list outrank lower ones, so a higher role can manage,
+                  kick, and ban members whose top role is lower. @everyone is always at the
+                  bottom.
+                </p>
+                <div class="roles-layout">
+                  <div
+                    class="settings-table roles-list"
+                    onDragOver={(e) => {
+                      if (!dragRoleId()) return;
+                      e.preventDefault();
+                      if (e.dataTransfer) e.dataTransfer.dropEffect = "move";
+                      // Empty space below the list = drop at the end (above
+                      // @everyone). Item handlers stop propagation, so reaching
+                      // here means the cursor is over the container's padding.
+                      setDragOverId(roles().find((r) => r.isDefault)?.id ?? null);
+                    }}
+                    onDrop={(e) => {
+                      e.preventDefault();
+                      dropRoleBefore(null);
+                    }}
+                  >
+                    <For
+                      each={roleListOrdered()}
+                      fallback={<div class="empty-note">No roles yet.</div>}
+                    >
+                      {(r) => (
+                        <button
+                          class={`role-list-item ${editingRole()?.id === r.id && r.id ? "active" : ""} ${dragRoleId() === r.id ? "dragging" : ""} ${dragRoleId() && dragRoleId() !== r.id && dragOverId() === r.id ? "drop-above" : ""}`}
+                          draggable={can(api.PERM.MANAGE_ROLES) && !r.isDefault}
+                          onClick={() => editRole(r)}
+                          onDragStart={(e) => {
+                            if (r.isDefault) return;
+                            setDragRoleId(r.id);
+                            if (e.dataTransfer) {
+                              e.dataTransfer.effectAllowed = "move";
+                              // Some engines require data to be set for a valid drag.
+                              e.dataTransfer.setData("text/plain", r.id);
+                            }
+                          }}
+                          onDragEnd={() => {
+                            setDragRoleId(null);
+                            setDragOverId(null);
+                          }}
+                          onDragOver={(e) => {
+                            if (!dragRoleId()) return;
+                            e.preventDefault();
+                            e.stopPropagation();
+                            if (e.dataTransfer) e.dataTransfer.dropEffect = "move";
+                            // Hovering any row (incl. @everyone) sets the insert
+                            // point ABOVE it; @everyone means "end of normal roles".
+                            setDragOverId(r.id);
+                          }}
+                          onDrop={(e) => {
+                            e.preventDefault();
+                            e.stopPropagation();
+                            dropRoleBefore(r.isDefault ? null : r.id);
+                          }}
+                        >
+                          <span
+                            class="role-dot"
+                            style={{ background: r.color || "var(--text-dim)" }}
+                          >
+                            <Show when={r.icon}>
+                              <img class="role-dot-icon" src={r.icon} alt="" />
+                            </Show>
+                          </span>
+                          <span
+                            class="role-list-name"
+                            style={r.color ? { color: r.color } : undefined}
+                          >
+                            {r.name}
+                          </span>
+                          <Show when={r.isDefault}>
+                            <span class="role-badge">default</span>
+                          </Show>
+                        </button>
+                      )}
+                    </For>
+                  </div>
+
+                  <Show
+                    when={editingRole()}
+                    fallback={
+                      <div class="role-editor empty">
+                        <div class="empty-note">
+                          Select a role to edit, or create a new one.
+                        </div>
+                      </div>
+                    }
+                  >
+                    {(role) => {
+                      const readOnly = () => !can(api.PERM.MANAGE_ROLES);
+                      return (
+                        <div class="role-editor">
+                          <div class="role-editor-head">
+                            <span class="role-editor-title">
+                              {role().id ? "Edit role" : "New role"} -{" "}
+                              <span class="role-editor-rolename">{roleDraftName()}</span>
+                            </span>
+                            <Show when={role().id && !role().isDefault && can(api.PERM.MANAGE_ROLES)}>
+                              <button
+                                class="icon-btn danger"
+                                title="Delete role"
+                                onClick={() => deleteRoleFlow(role())}
+                              >
+                                <Fa icon={faTrash} />
+                              </button>
+                            </Show>
+                          </div>
+
+                          <div class="role-tabs">
+                            <button
+                              class={`role-tab ${roleTab() === "display" ? "active" : ""}`}
+                              onClick={() => setRoleTab("display")}
+                            >
+                              Display
+                            </button>
+                            <button
+                              class={`role-tab ${roleTab() === "permissions" ? "active" : ""}`}
+                              onClick={() => setRoleTab("permissions")}
+                            >
+                              Permissions
+                            </button>
+                          </div>
+
+                          <Switch>
+                            <Match when={roleTab() === "display"}>
+                              <div class="field">
+                                <label class="field-label">Role name</label>
+                                <input
+                                  value={roleDraftName()}
+                                  disabled={readOnly() || role().isDefault}
+                                  onInput={(e) => setRoleDraftName(e.currentTarget.value)}
+                                />
+                                <Show when={role().isDefault}>
+                                  <div class="field-help">The @everyone role can't be renamed.</div>
+                                </Show>
+                              </div>
+
+                              <label class="field-label">Role color</label>
+                              <div class="field-help">
+                                Members use the color of the highest role they have.
+                              </div>
+                              <div class="color-swatches">
+                                <button
+                                  class={`color-swatch none ${!roleDraftColor() ? "active" : ""}`}
+                                  title="No color"
+                                  disabled={readOnly()}
+                                  onClick={() => setRoleDraftColor("")}
+                                >
+                                  <Fa icon={faXmark} />
+                                </button>
+                                <For each={ROLE_COLORS}>
+                                  {(c) => (
+                                    <button
+                                      class={`color-swatch ${roleDraftColor() === c ? "active" : ""}`}
+                                      style={{ background: c }}
+                                      disabled={readOnly()}
+                                      onClick={() => setRoleDraftColor(c)}
+                                    />
+                                  )}
+                                </For>
+                                <label class="color-swatch custom" title="Custom color">
+                                  <input
+                                    type="color"
+                                    disabled={readOnly()}
+                                    value={roleDraftColor() || "#5865f2"}
+                                    onInput={(e) => setRoleDraftColor(e.currentTarget.value)}
+                                  />
+                                </label>
+                              </div>
+
+                              <label class="field-label">Role icon</label>
+                              <div class="field-help">
+                                Shown next to the names of members whose highest role is this
+                                one. Upload a small image (resized to 64x64, stored inline).
+                              </div>
+                              <div class="role-icon-row">
+                                <span class="role-icon-preview">
+                                  <Show
+                                    when={roleDraftIcon()}
+                                    fallback={<Fa icon={faUserGroup} />}
+                                  >
+                                    <img src={roleDraftIcon()} alt="role icon" />
+                                  </Show>
+                                </span>
+                                <label class="btn-secondary btn-sm file-btn">
+                                  Choose image
+                                  <input
+                                    type="file"
+                                    accept="image/*"
+                                    disabled={readOnly()}
+                                    onChange={(e) => {
+                                      pickRoleIcon(e.currentTarget.files?.[0]);
+                                      e.currentTarget.value = "";
+                                    }}
+                                  />
+                                </label>
+                                <Show when={roleDraftIcon()}>
+                                  <button
+                                    class="btn-secondary btn-sm"
+                                    disabled={readOnly()}
+                                    onClick={() => setRoleDraftIcon("")}
+                                  >
+                                    Remove
+                                  </button>
+                                </Show>
+                              </div>
+
+                              <Show when={!role().isDefault}>
+                                <label class="toggle-row">
+                                  <span class="toggle-text">
+                                    <span class="toggle-title">
+                                      Display role members separately from online members
+                                    </span>
+                                    <span class="toggle-desc">
+                                      Members with this role get their own section in the member
+                                      list, with a count.
+                                    </span>
+                                  </span>
+                                  <input
+                                    type="checkbox"
+                                    class="switch"
+                                    disabled={readOnly()}
+                                    checked={roleDraftHoist()}
+                                    onChange={(e) => setRoleDraftHoist(e.currentTarget.checked)}
+                                  />
+                                </label>
+                              </Show>
+
+                              <label class="toggle-row">
+                                <span class="toggle-text">
+                                  <span class="toggle-title">Allow anyone to @mention this role</span>
+                                  <span class="toggle-desc">
+                                    When on, any member can ping everyone with this role.
+                                  </span>
+                                </span>
+                                <input
+                                  type="checkbox"
+                                  class="switch"
+                                  disabled={readOnly()}
+                                  checked={roleDraftMentionable()}
+                                  onChange={(e) =>
+                                    setRoleDraftMentionable(e.currentTarget.checked)
+                                  }
+                                />
+                              </label>
+                            </Match>
+
+                            <Match when={roleTab() === "permissions"}>
+                              <For each={api.PERM_GROUPS}>
+                                {(group) => (
+                                  <div class="perm-group">
+                                    <h3 class="perm-group-title">{group.category}</h3>
+                                    <For each={group.perms}>
+                                      {(p) => (
+                                        <div
+                                          class={`perm-row ${p.key === "ADMINISTRATOR" ? "perm-admin" : ""}`}
+                                        >
+                                          <span class="perm-text">
+                                            <span class="perm-label">{p.label}</span>
+                                            <span class="perm-desc">{p.desc}</span>
+                                          </span>
+                                          <input
+                                            type="checkbox"
+                                            class="switch"
+                                            disabled={
+                                              readOnly() ||
+                                              (p.key === "ADMINISTRATOR" &&
+                                                !can(api.PERM.ADMINISTRATOR))
+                                            }
+                                            checked={(roleDraftPerms() & p.bit) !== 0n}
+                                            onChange={(e) =>
+                                              toggleRolePerm(p.bit, e.currentTarget.checked)
+                                            }
+                                          />
+                                        </div>
+                                      )}
+                                    </For>
+                                  </div>
+                                )}
+                              </For>
+                            </Match>
+                          </Switch>
+                        </div>
+                      );
+                    }}
+                  </Show>
+                </div>
+              </Match>
+
+              <Match when={settingsSection() === "invites"}>
+                <h2 class="settings-h">Invites</h2>
+                <p class="field-help">Generate a shareable invite key for this tavern.</p>
+                <div class="actions">
+                  <button onClick={showInvite}>Create invite key</button>
+                </div>
+                <Show when={invite()}>
+                  <textarea class="invite-input" readOnly rows={3} value={invite()!.key} />
+                </Show>
+              </Match>
+
+              <Match when={settingsSection() === "automod"}>
+                <h2 class="settings-h">AutoMod</h2>
+                <div class="note">
+                  Rate-limit + name-heuristic guardrails already run server-side and write the
+                  Audit Log. A configurable AutoMod rules UI is coming soon.
+                </div>
+              </Match>
+            </Switch>
+          </div>
+
+          {/* Sticky unsaved-changes bar (Discord-style), shown while a role draft
+              differs from its saved state. Navigation is blocked until resolved. */}
+          <Show when={editingRole() && roleDirty()}>
+            <div class="unsaved-bar">
+              <span class="unsaved-text">Careful - you have unsaved changes!</span>
+              <button class="link-btn" onClick={resetRoleDraft}>
+                Reset
+              </button>
+              <button class="btn-save" disabled={roleBusy()} onClick={saveRole}>
+                Save Changes
+              </button>
+            </div>
+          </Show>
+        </div>
+      </Show>
+
+      {/* Custom confirmation dialog - replaces the native window.confirm box. */}
+      <Show when={confirmDialog()}>
+        <div class="modal-backdrop confirm-backdrop" onClick={() => resolveConfirm(false)}>
+          <div class="modal confirm-modal" onClick={(e) => e.stopPropagation()}>
+            <h3>{confirmDialog()!.title}</h3>
+            <p class="confirm-body">{confirmDialog()!.body}</p>
+            <div class="modal-footer">
+              <button class="btn-secondary" onClick={() => resolveConfirm(false)}>
+                {confirmDialog()!.cancelLabel ?? "Cancel"}
+              </button>
+              <button
+                class={confirmDialog()!.danger ? "btn-danger" : ""}
+                onClick={() => resolveConfirm(true)}
+              >
+                {confirmDialog()!.confirmLabel ?? "Confirm"}
+              </button>
+            </div>
           </div>
         </div>
       </Show>
@@ -2095,7 +3694,6 @@ function AddServerModal(props: {
   const [inviteKey, setInviteKey] = createSignal("");
   const [url, setUrl] = createSignal("");
   const [username, setUsername] = createSignal(props.defaultUsername);
-  const [password, setPassword] = createSignal("");
   const [busy, setBusy] = createSignal(false);
   const [error, setError] = createSignal<string | null>(null);
 
@@ -2132,7 +3730,7 @@ function AddServerModal(props: {
           endpoint: info.endpoint,
           cert: info.cert,
           username: username(),
-          password: password(),
+          password: "", // taverns use key auth (no password)
         },
         true,
         info.token
@@ -2148,7 +3746,7 @@ function AddServerModal(props: {
           endpoint: url().trim(),
           cert: null,
           username: username(),
-          password: password(),
+          password: "", // taverns use key auth (no password)
         },
         true
       );
@@ -2184,7 +3782,7 @@ function AddServerModal(props: {
             </div>
           </Match>
 
-          {/* Step 2a: create — pick private (real) or public (scaffold). */}
+          {/* Step 2a: create - pick private (real) or public (scaffold). */}
           <Match when={step() === "create"}>
             <h3>Create a tavern</h3>
             <div class="choice-cards">
@@ -2271,14 +3869,10 @@ function AddServerModal(props: {
             <div class="field">
               <label class="field-label">Username</label>
               <input value={username()} onInput={(e) => setUsername(e.currentTarget.value)} />
-            </div>
-            <div class="field">
-              <label class="field-label">Password</label>
-              <input
-                type="password"
-                value={password()}
-                onInput={(e) => setPassword(e.currentTarget.value)}
-              />
+              <div class="field-help">
+                No password - you join with your identity key. Defaults to your name; change it
+                to use a different name on this tavern.
+              </div>
             </div>
 
             <Show when={error()}>

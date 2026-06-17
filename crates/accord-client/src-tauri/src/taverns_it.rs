@@ -2,8 +2,8 @@
 //!
 //! This is a `#[cfg(test)]` module compiled into the binary (the crate is
 //! bin-only, so a `tests/` integration crate can't reach internal modules). It
-//! drives the SAME client-side code the Tauri commands use — `grpc::build_channel`
-//! / `grpc::authed` and the `dto::GroupDto` mapping — against a real in-process
+//! drives the SAME client-side code the Tauri commands use - `grpc::build_channel`
+//! / `grpc::authed` and the `dto::GroupDto` mapping - against a real in-process
 //! `accord-server`, so it covers the client gRPC layer + DTO conversions that the
 //! server-side `taverns_smoke` example cannot.
 //!

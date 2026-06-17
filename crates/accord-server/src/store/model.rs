@@ -49,14 +49,17 @@ pub struct MemberRow {
 #[derive(Debug, Clone)]
 pub struct TavernRow {
     pub name: String,
+    /// Small inline base64 data URL, or "" for none.
     pub icon_url: String,
     pub description: String,
     /// BAN-PLAN.md Layer-2 per-server account-linking toggle (placeholder).
     pub linking_enabled: bool,
+    /// Wide banner image as a base64 data URL, or "" for none.
+    pub banner_url: String,
 }
 
 /// A persistent ban (account-level). `ban_tag_commitment` (BAN-PLAN.md Layer 2)
-/// is not surfaced here yet — the working subset is account-id bans.
+/// is not surfaced here yet - the working subset is account-id bans.
 #[derive(Debug, Clone)]
 pub struct BanRow {
     pub user_id: Uuid,
@@ -133,6 +136,26 @@ pub struct RoleRow {
     pub permissions: i64,
     pub position: i32,
     pub is_default: bool,
+    /// Hex color (e.g. "#5865f2") or "" for the default text color.
+    pub color: String,
+    /// Small inline icon as a base64 data URL, or "" for none.
+    pub icon: String,
+    /// Display members with this role in a separate member-list section.
+    pub hoist: bool,
+    /// Anyone may @mention this role.
+    pub mentionable: bool,
+}
+
+/// The mutable display + behaviour fields written on create/update of a role.
+/// (Position is managed separately via reorder; `is_default` never changes.)
+#[derive(Debug, Clone)]
+pub struct RoleWrite {
+    pub name: String,
+    pub permissions: i64,
+    pub color: String,
+    pub icon: String,
+    pub hoist: bool,
+    pub mentionable: bool,
 }
 
 /// A password-encrypted key backup (opaque ciphertext + public KDF inputs).

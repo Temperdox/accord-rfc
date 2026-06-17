@@ -85,6 +85,14 @@ impl Sessions {
         self.active()?.channel.clone()
     }
 
+    /// Channel + token for a specific server id (for background per-server reads
+    /// like fetching each tavern's icon without switching the active session).
+    #[must_use]
+    pub fn channel_token_for(&self, id: &str) -> Option<(Channel, String)> {
+        let s = self.map.get(id)?;
+        Some((s.channel.clone()?, s.token.clone()?))
+    }
+
     /// Channel + token for the session owning `user_id` (for per-session vault
     /// uploads from background sessions).
     #[must_use]

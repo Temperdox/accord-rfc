@@ -93,6 +93,7 @@ async fn main() -> anyhow::Result<()> {
             Request::new(CreateRoleRequest {
                 name: "Nope".into(),
                 permissions: Permissions::MANAGE_ROLES.bits().to_string(),
+                ..Default::default()
             }),
             &b_tok,
         ))
@@ -110,6 +111,7 @@ async fn main() -> anyhow::Result<()> {
             Request::new(CreateRoleRequest {
                 name: "Moderator".into(),
                 permissions: Permissions::MANAGE_ROLES.bits().to_string(),
+                ..Default::default()
             }),
             &owner_tok,
         ))
@@ -133,6 +135,7 @@ async fn main() -> anyhow::Result<()> {
         Request::new(CreateRoleRequest {
             name: "Helper".into(),
             permissions: Permissions::SEND_MESSAGES.bits().to_string(),
+            ..Default::default()
         }),
         &b_tok,
     ))
@@ -145,6 +148,7 @@ async fn main() -> anyhow::Result<()> {
             Request::new(CreateRoleRequest {
                 name: "Sneaky Admin".into(),
                 permissions: Permissions::ADMINISTRATOR.bits().to_string(),
+                ..Default::default()
             }),
             &b_tok,
         ))
@@ -162,6 +166,7 @@ async fn main() -> anyhow::Result<()> {
             Request::new(CreateRoleRequest {
                 name: "Admins".into(),
                 permissions: Permissions::ADMINISTRATOR.bits().to_string(),
+                ..Default::default()
             }),
             &owner_tok,
         ))

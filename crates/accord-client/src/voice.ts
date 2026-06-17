@@ -1,5 +1,5 @@
 /**
- * Voice/video media layer (SCAFFOLD — no live media yet).
+ * Voice/video media layer (SCAFFOLD - no live media yet).
  *
  * The transport decision (see plan + ARCHITECTURE): WebRTC P2P in this webview.
  * Each participant opens an `RTCPeerConnection` to every other participant; the
@@ -14,9 +14,10 @@
  *      `api.sendVoiceSignal` and `onVoiceSignal`.
  *   3. Attach remote tracks to <audio>/<video> sinks; render screen/camera video
  *      inside a SandboxedFrame (src/sandbox) so embedded media stays isolated.
- * None of that runs yet — joining a voice channel exchanges presence only.
+ * None of that runs yet - joining a voice channel exchanges presence only.
  */
 import * as api from "./api";
+import { dismissKey, notify, notifyTransient } from "./notifications";
 
 /** Local capture/announce state for the channel this device is in. */
 export interface VoiceLocalState {
@@ -35,7 +36,7 @@ export const initialVoiceState = (): VoiceLocalState => ({
 
 const TODO = (what: string) =>
   console.warn(
-    `[voice] TODO: ${what} — RTCPeerConnection/track wiring is not implemented yet ` +
+    `[voice] TODO: ${what} - RTCPeerConnection/track wiring is not implemented yet ` +
       `(scaffold). See src/voice.ts.`
   );
 
@@ -51,11 +52,48 @@ export async function leave(groupId: string): Promise<void> {
   TODO("close RTCPeerConnections and stop local tracks");
 }
 
-/** Toggle mic. Stub: only updates announced state. */
+/** Toggle mic. Stub for capture, but unmuting does a real check that an input
+ * device exists and surfaces a header notification if none is found. */
 export async function setMuted(s: VoiceLocalState, muted: boolean): Promise<void> {
   if (!s.groupId) return;
-  if (!muted) TODO("getUserMedia({audio:true}) and add the track");
+  if (!muted) {
+    TODO("getUserMedia({audio:true}) and add the track");
+    if (!(await hasMicrophone())) {
+      notify({
+        key: "no-mic",
+        severity: "issue",
+        message: "No microphone detected - others won't hear you.",
+      });
+    } else {
+      dismissKey("no-mic");
+    }
+  }
   await api.setVoiceState(s.groupId, muted, s.cameraOn, s.screenOn);
+}
+
+/** Whether the system has at least one audio input device. Uses the webview's
+ * mediaDevices API (device presence is visible without mic permission). */
+async function hasMicrophone(): Promise<boolean> {
+  try {
+    const devices = await navigator.mediaDevices?.enumerateDevices?.();
+    return !!devices?.some((d) => d.kind === "audioinput");
+  } catch {
+    return true; // can't tell - don't nag
+  }
+}
+
+/** Call when the user tries to speak while personally muted. The future voice-
+ * activity detector (once real capture lands) invokes this; it surfaces a brief
+ * header reminder rather than silently dropping their audio. */
+export function warnMutedSpeaking(): void {
+  notifyTransient(
+    {
+      key: "muted-speaking",
+      severity: "warn",
+      message: "You're muted - unmute to talk.",
+    },
+    3000
+  );
 }
 
 /** Toggle camera. Stub: only updates announced state. */

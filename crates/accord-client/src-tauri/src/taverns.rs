@@ -115,7 +115,7 @@ fn port_is_free(port: u16) -> bool {
         .is_ok()
 }
 
-/// Spawn one private tavern server instance (does NOT touch the registry — the
+/// Spawn one private tavern server instance (does NOT touch the registry - the
 /// caller stores the returned [`RunningTavern`]).
 async fn spawn_tavern(
     app: &AppHandle,
@@ -256,6 +256,43 @@ pub async fn resume_hosted_taverns(
         }
     }
     Ok(out)
+}
+
+/// Delete a tavern this client hosts: stop the instance, drop its persisted
+/// metadata, and remove its data directory (DB + cert + jwt). Only works for a
+/// tavern in the hosted registry (i.e. one you own + host); joining clients
+/// "leave" instead. Irreversible.
+#[tauri::command]
+pub async fn delete_tavern(
+    app: AppHandle,
+    state: State<'_, SharedHostedTaverns>,
+    id: String,
+) -> Result<(), String> {
+    {
+        let mut guard = state.lock().await;
+        match guard.running.remove(&id) {
+            Some(mut running) => {
+                if let Some(tx) = running.shutdown.take() {
+                    let _ = tx.send(());
+                }
+                running.handle.abort();
+            }
+            None => {
+                return Err("you don't host this tavern (only the host can delete it)".to_owned());
+            }
+        }
+    }
+
+    // Drop it from the persisted list so it doesn't re-spawn on next launch.
+    let metas: Vec<TavernMeta> = load_meta(&app).into_iter().filter(|m| m.id != id).collect();
+    let _ = save_meta(&app, &metas);
+
+    // Remove the tavern's data directory (best-effort).
+    if let Ok(dir) = taverns_root(&app).map(|r| r.join(&id)) {
+        let _ = std::fs::remove_dir_all(dir);
+    }
+    tracing::info!(%id, "deleted hosted tavern");
+    Ok(())
 }
 
 /// Stop all hosted taverns (graceful). Called on app shutdown.

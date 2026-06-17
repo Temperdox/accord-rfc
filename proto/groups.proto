@@ -36,6 +36,23 @@ service GroupService {
   rpc BanMember(BanMemberRequest) returns (BanMemberResponse);
   rpc UnbanMember(UnbanMemberRequest) returns (UnbanMemberResponse);
   rpc ListBans(ListBansRequest) returns (ListBansResponse);
+  // Moderation audit log (guardrail outcomes + admin actions). MANAGE_SERVER.
+  rpc ListAudit(ListAuditRequest) returns (ListAuditResponse);
+}
+
+message ListAuditRequest {
+  uint32 limit = 1;
+}
+message ListAuditResponse {
+  repeated AuditEntry entries = 1;
+}
+message AuditEntry {
+  UserId actor_id = 1;
+  string action = 2;
+  string target = 3;
+  string verdict = 4;
+  string reason = 5;
+  int64 created_at_ms = 6;
 }
 
 message CreatePublicGroupRequest {
@@ -136,18 +153,21 @@ message GetTavernRequest {}
 
 message TavernInfo {
   string name = 1;
+  // icon_url / banner_url hold small inline base64 data URLs, or "" for none.
   string icon_url = 2;
   string description = 3;
   // BAN-PLAN.md Layer-2 per-server account-linking toggle. Placeholder for now
   // (the cryptographic ban-tag system is a later layer); surfaced so the UI and
   // schema already carry it.
   bool linking_enabled = 4;
+  string banner_url = 5;
 }
 
 message UpdateTavernRequest {
   string name = 1;
   string icon_url = 2;
   string description = 3;
+  string banner_url = 4;
 }
 
 // ---- Moderation (kick / ban) -----------------------------------------------

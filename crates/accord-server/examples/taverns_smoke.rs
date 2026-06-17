@@ -187,6 +187,7 @@ async fn main() -> anyhow::Result<()> {
             Request::new(CreateRoleRequest {
                 name: "Admins".into(),
                 permissions: Permissions::ADMINISTRATOR.bits().to_string(),
+                ..Default::default()
             }),
             &owner_tok,
         ))
@@ -253,6 +254,7 @@ async fn main() -> anyhow::Result<()> {
                 name: "The Rusty Tankard".into(),
                 icon_url: String::new(),
                 description: "a cozy place".into(),
+                banner_url: String::new(),
             }),
             &owner_tok,
         ))

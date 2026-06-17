@@ -156,15 +156,49 @@ select:focus {
 }
 
 /* ---- Buttons ---------------------------------------------------------------
-   The base <button> style lives in styles.css; these are variants.
+   The bare <button> element gets a base look in styles.css, but that does NOT
+   reach button-like LABELS/ANCHORS (e.g. file pickers wrap an <input> in a
+   <label>). So the appearance is also defined here as a CLASS base shared by
+   every button variant, making any element styled with these classes look and
+   round identically regardless of its tag.
 */
+.btn,
+.btn-secondary,
+.btn-danger {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  padding: 10px 16px;
+  border-radius: 6px;
+  border: 1px solid transparent;
+  font-size: 14px;
+  font-weight: 600;
+  line-height: 1.2;
+  cursor: pointer;
+  box-sizing: border-box;
+  background: var(--accent);
+  color: #fff;
+  text-decoration: none;
+}
+.btn:hover:not(:disabled),
+.btn:not(button):hover {
+  background: var(--accent-dim);
+}
 .btn-secondary {
   background: transparent;
-  border: 1px solid var(--border);
+  border-color: var(--border);
   color: var(--text);
 }
 .btn-secondary:hover:not(:disabled) {
   background: var(--bg-alt);
+}
+.btn-danger {
+  background: var(--danger);
+  color: #fff;
+}
+.btn-danger:hover:not(:disabled) {
+  filter: brightness(1.1);
 }
 .btn-sm {
   padding: 6px 14px;

@@ -4,7 +4,7 @@
 //! `getUserMedia`/`getDisplayMedia`); these commands only carry **signaling** on
 //! the existing `MessageStream` (the server relays it opaquely). The actual
 //! peer-connection/track wiring lives in the frontend (`src/voice.ts`) and is the
-//! documented TODO seam — these commands are the IPC half of that seam.
+//! documented TODO seam - these commands are the IPC half of that seam.
 
 use accord_proto::client_message::Payload as ClientPayload;
 use accord_proto::{ClientMessage, DeviceId, GroupId, VoiceSignal, VoiceStateUpdate};

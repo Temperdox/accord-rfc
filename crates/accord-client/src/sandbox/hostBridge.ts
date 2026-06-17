@@ -1,5 +1,5 @@
 /**
- * Host SDK bridge — the ONLY surface sandboxed content (channel presets, and the
+ * Host SDK bridge - the ONLY surface sandboxed content (channel presets, and the
  * future screen-share/embedded media frame) may call, over `postMessage`.
  *
  * SECURITY MODEL (see BOT-API-PLAN.md "The two layers"):
@@ -7,7 +7,7 @@
  *     `allow-same-origin`, so it cannot reach this app's origin, `window.__TAURI__`,
  *     `invoke`, cookies, or the session. It is a separate, opaque origin.
  *   • This bridge exposes ONLY capabilities the viewing user already has, scoped
- *     to the hosting channel — never `invoke`, never the Bot API, never anything
+ *     to the hosting channel - never `invoke`, never the Bot API, never anything
  *     privileged. A code-injection inside a preset therefore gains, at most, the
  *     user's own authority in that one channel; it can never escalate to admin or
  *     bot power. (Bots are separate authenticated principals outside the webview.)
@@ -18,7 +18,7 @@
  */
 
 /** Capabilities a sandboxed frame is granted for its hosting channel. All are
- * scoped to the viewing user's existing authority — nothing privileged. */
+ * scoped to the viewing user's existing authority - nothing privileged. */
 export interface HostCapabilities {
   /** Channel this frame is hosted in (everything is scoped to it). */
   groupId: string;
@@ -31,7 +31,7 @@ export interface HostCapabilities {
   setPresetData?: (key: string, value: string) => Promise<void>;
 }
 
-/** Allowlisted request verbs. Anything not here is rejected — there is no
+/** Allowlisted request verbs. Anything not here is rejected - there is no
  * passthrough and no privileged verb. */
 type HostRequest =
   | { id: number; verb: "sendMessage"; content: string }

@@ -238,7 +238,7 @@ struct Registry {
 }
 
 /// A device's voice state in a voice channel (scaffold; media is P2P in the
-/// client). Tracked in-memory per instance — single-instance only, like the
+/// client). Tracked in-memory per instance - single-instance only, like the
 /// dynamic `subscribe`/`is_connected` machinery above. Cross-instance voice
 /// presence would propagate over the bus, deferred.
 #[derive(Debug, Clone, Copy)]

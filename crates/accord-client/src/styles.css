@@ -223,6 +223,11 @@ textarea:focus {
   position: relative;
   width: 44px;
   height: 44px;
+  /* Override the base button padding so an icon image fills the whole circle. */
+  padding: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
   border-radius: 50%;
   border: none;
   background: #2a2c36;
@@ -410,9 +415,72 @@ textarea:focus {
   display: flex;
   align-items: center;
   gap: 8px;
-  padding: 8px 10px;
+  margin: var(--space-3);
+  padding: 6px 8px;
+  min-height: 46px;
+  background: var(--bg-input);
+  border: 1px solid transparent;
+  border-radius: var(--radius-lg);
+  transition: background 0.12s ease, border-color 0.12s ease;
+}
+.user-card:hover {
   background: #15161b;
-  border-top: 1px solid var(--border);
+  border-color: var(--border);
+}
+
+/* Discord-style voice/call panel, sits just above the user pill. */
+.voice-panel {
+  margin: 0 var(--space-3);
+  padding: var(--space-2) var(--space-3);
+  background: #15161b;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+}
+.voice-panel-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+.voice-panel-info {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+.voice-panel-status {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  color: var(--ok);
+  font-size: var(--fs-sm);
+  font-weight: 600;
+}
+.voice-panel-where {
+  font-size: var(--fs-xs);
+  color: var(--text-dim);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.voice-panel-hangup {
+  flex: 0 0 auto;
+  width: 30px;
+  height: 30px;
+  border-radius: 50%;
+  background: var(--danger);
+  border: none;
+  color: #fff;
+  cursor: pointer;
+}
+.voice-panel-hangup:hover {
+  filter: brightness(1.1);
+}
+.voice-panel-actions {
+  display: flex;
+  gap: var(--space-2);
+  margin-top: var(--space-2);
+}
+.voice-panel-actions .voice-toggle {
+  flex: 1;
 }
 .user-avatar {
   width: 32px;
@@ -811,19 +879,145 @@ button.link:hover:not(:disabled) {
   white-space: pre-wrap;
   word-break: break-word;
 }
+/* The composer is one rounded, taller box: attach (paperclip) + input + an
+   animated actions cluster (3 ascending bars that, on hover, morph into an
+   emoji/gif/sticker/send toolbar). */
 .composer {
   display: flex;
-  gap: 8px;
-  padding: 12px 18px;
-  border-top: 1px solid var(--border);
+  align-items: center;
+  gap: var(--space-2);
+  margin: var(--space-3);
+  padding: 4px 6px 4px 10px;
+  min-height: 46px;
+  background: var(--bg-input);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  transition: border-color 0.12s ease, background 0.12s ease;
 }
-.composer input {
+.composer:hover,
+.composer:focus-within {
+  border-color: var(--accent);
+  background: #15161b;
+}
+.composer-input {
   flex: 1;
-  margin-top: 0;
+  min-width: 0;
+  background: transparent;
+  border: none;
+  outline: none;
+  color: var(--text);
+  font-size: var(--fs-base);
+  padding: 8px 0;
 }
-.composer button {
+.composer-input::placeholder {
+  color: var(--text-dim);
+}
+.composer-attach {
   flex: 0 0 auto;
-  width: 90px;
+  width: auto;
+  background: transparent;
+  border: none;
+  color: var(--text-dim);
+  cursor: pointer;
+  font-size: var(--fs-lg);
+  padding: 4px 6px;
+  border-radius: 50%;
+}
+.composer-attach:hover:not(:disabled) {
+  color: var(--text);
+  background: var(--bg-alt);
+}
+
+/* Right-side actions: collapsed = 3 ascending bars (also the send button);
+   hover = the bars morph (shorten + round) and a toolbar slides out left. */
+.composer-actions {
+  position: relative;
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  height: 30px;
+  min-width: 34px;
+}
+.composer-bars {
+  display: flex;
+  align-items: center; /* centered so the ascending bars don't read as a signal icon */
+  gap: 3px;
+  height: 22px;
+  width: auto;
+  padding: 0 6px;
+  background: transparent;
+  border: none;
+  cursor: pointer;
+  transition: opacity 0.15s ease;
+}
+.composer-bars i {
+  display: block;
+  width: 3px;
+  background: var(--accent);
+  border-radius: 2px;
+  transition: height 0.18s ease, border-radius 0.18s ease;
+}
+.composer-bars i:nth-child(1) {
+  height: 9px;
+}
+.composer-bars i:nth-child(2) {
+  height: 14px;
+}
+.composer-bars i:nth-child(3) {
+  height: 20px;
+}
+.composer-actions:hover .composer-bars i {
+  height: 5px;
+  border-radius: 999px;
+}
+.composer-actions:hover .composer-bars {
+  opacity: 0;
+  pointer-events: none;
+}
+.composer-toolbar {
+  position: absolute;
+  right: 0;
+  top: 50%;
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  padding: 2px;
+  background: var(--bg-alt);
+  border-radius: var(--radius-pill);
+  opacity: 0;
+  max-width: 0;
+  overflow: hidden;
+  pointer-events: none;
+  transform: translateY(-50%) translateX(10px);
+  transition: opacity 0.15s ease, max-width 0.22s ease, transform 0.22s ease;
+}
+.composer-actions:hover .composer-toolbar {
+  opacity: 1;
+  max-width: 220px;
+  pointer-events: auto;
+  transform: translateY(-50%) translateX(0);
+}
+.composer-tool,
+.composer-send {
+  flex: 0 0 auto;
+  width: auto;
+  background: transparent;
+  border: none;
+  color: var(--text-dim);
+  cursor: pointer;
+  padding: 5px 8px;
+  border-radius: var(--radius-pill);
+  font-size: var(--fs-sm);
+  font-weight: 600;
+}
+.composer-tool:hover:not(:disabled),
+.composer-send:hover:not(:disabled) {
+  background: var(--bg-input);
+  color: var(--text);
+}
+.composer-send {
+  color: var(--accent);
 }
 
 /* ---- Taverns: channels, voice, members, mod alerts --------------------- */
@@ -1082,7 +1276,7 @@ button.link:hover:not(:disabled) {
   background: #000;
 }
 
-/* Create/Join choice cards (rounded rectangles — room for future decals + anim). */
+/* Create/Join choice cards (rounded rectangles - room for future decals + anim). */
 .choice-cards {
   display: flex;
   gap: var(--space-3);
@@ -1149,4 +1343,1102 @@ button.link:hover:not(:disabled) {
   margin-top: var(--space-5);
   padding-top: var(--space-3);
   border-top: 1px solid var(--border);
+}
+
+/* ---- Top header notification bar --------------------------------------- */
+/* Full-width, thin, colour-coded rows above the app (info / warn / issue). */
+.notif-stack {
+  flex: 0 0 auto;
+  display: flex;
+  flex-direction: column;
+}
+.notif-bar {
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: center; /* center the icon + message + link group */
+  gap: var(--space-2);
+  height: 30px;
+  padding: 0 36px; /* reserve room for the absolutely-placed close button */
+  font-size: var(--fs-sm);
+  text-align: center;
+  border-bottom: 1px solid rgba(0, 0, 0, 0.3);
+}
+.notif-icon {
+  flex: 0 0 auto;
+  display: inline-flex;
+  font-size: var(--fs-base);
+}
+.notif-msg {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+/* Inline "click here…" hyperlink-style action. */
+.notif-link {
+  flex: 0 0 auto;
+  width: auto;
+  background: transparent;
+  border: none;
+  color: inherit;
+  font: inherit;
+  font-weight: 600;
+  text-decoration: underline;
+  cursor: pointer;
+  padding: 0;
+}
+.notif-link:hover {
+  opacity: 0.8;
+}
+.notif-close {
+  position: absolute;
+  right: var(--space-2);
+  top: 0;
+  height: 100%;
+  display: flex;
+  align-items: center;
+  width: auto;
+  background: transparent;
+  border: none;
+  color: inherit;
+  opacity: 0.7;
+  cursor: pointer;
+  padding: 0 4px;
+}
+.notif-close:hover {
+  opacity: 1;
+}
+/* Severity colours: tinted dark fills with readable light text. */
+.notif-info {
+  background: #2b3350;
+  color: #d3dbff;
+}
+.notif-warn {
+  background: #4a3a1c;
+  color: #ffe2a3;
+}
+.notif-issue {
+  background: #4a2326;
+  color: #ffc9cc;
+}
+
+/* ---- Contacts: clickable rows, profile card, context menu -------------- */
+.sidebar-header-actions {
+  display: inline-flex;
+  gap: 2px;
+}
+
+/* Clickable tavern header (opens the management menu). */
+.tavern-header-bar {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  padding: 0;
+  margin-bottom: var(--space-1);
+}
+.tavern-header {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2);
+  width: auto;
+  background: transparent;
+  border: none;
+  color: var(--text);
+  cursor: pointer;
+  font-weight: 700;
+  font-size: var(--fs-base);
+  /* match .channel's box so the hover/active highlight lines up with channels */
+  padding: 8px 10px;
+  border-radius: var(--radius-sm);
+}
+.tavern-header:hover {
+  background: var(--bg-alt);
+}
+.tavern-header-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.tavern-header svg {
+  font-size: var(--fs-xs);
+  color: var(--text-dim);
+}
+.contact-row-click {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  width: 100%;
+  text-align: left;
+  background: transparent;
+  border: none;
+  color: var(--text);
+  padding: var(--space-2) var(--space-3);
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+}
+.contact-row-click:hover {
+  background: var(--bg-alt);
+}
+.contact-avatar {
+  width: 32px;
+  height: 32px;
+  border-radius: 50%;
+  background: var(--accent-dim);
+  color: #fff;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: var(--fs-sm);
+  flex: 0 0 auto;
+}
+
+/* Full-screen invisible layer that closes a popout/menu on click. */
+.overlay-dismiss {
+  position: fixed;
+  inset: 0;
+  z-index: 60;
+}
+.profile-card {
+  position: fixed;
+  width: 260px;
+  background: var(--bg-alt);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.45);
+  padding: var(--space-3);
+}
+.profile-card-head {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+}
+.profile-card-avatar {
+  width: 48px;
+  height: 48px;
+  border-radius: 50%;
+  background: var(--accent-dim);
+  color: #fff;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: var(--fs-lg);
+  flex: 0 0 auto;
+}
+.profile-card-name {
+  font-size: var(--fs-lg);
+  font-weight: 600;
+}
+.profile-card-fp {
+  margin: var(--space-2) 0 var(--space-3);
+  font-size: var(--fs-xs);
+  color: var(--text-dim);
+  word-break: break-all;
+}
+.profile-card-actions {
+  display: flex;
+  gap: var(--space-2);
+}
+.profile-card-actions button {
+  flex: 1;
+  width: auto;
+}
+
+.context-menu {
+  position: fixed;
+  min-width: 160px;
+  background: var(--bg-alt);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.45);
+  padding: var(--space-1);
+}
+.context-item {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  width: 100%;
+  text-align: left;
+  background: transparent;
+  border: none;
+  color: var(--text);
+  padding: 6px var(--space-2);
+  border-radius: var(--radius-sm);
+  font-size: var(--fs-md);
+  cursor: pointer;
+}
+.context-item:hover {
+  background: var(--accent-dim);
+  color: #fff;
+}
+.context-item.danger {
+  color: var(--danger);
+}
+.context-item.danger:hover {
+  background: var(--danger);
+  color: #fff;
+}
+.context-sep {
+  height: 1px;
+  margin: 4px 6px;
+  background: var(--border);
+}
+
+/* ---- DM call stage (avatars + controls in a call) --------------------- */
+.call-stage {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--space-3);
+  padding: var(--space-5) 0;
+  background: var(--bg-alt);
+  border-bottom: 1px solid var(--border);
+}
+.call-avatars {
+  display: flex;
+  gap: var(--space-4);
+}
+.call-avatar {
+  width: 64px;
+  height: 64px;
+  border-radius: 50%;
+  background: var(--accent-dim);
+  color: #fff;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 24px;
+}
+.call-controls {
+  display: flex;
+  gap: var(--space-2);
+}
+.call-controls .voice-toggle {
+  flex: 0 0 auto;
+  width: 44px;
+  border-radius: var(--radius-pill);
+}
+
+/* Full-screen Server (tavern) settings: Discord-style left nav + content. */
+.settings-page {
+  position: fixed;
+  inset: 0;
+  z-index: 50;
+  display: flex;
+  background: var(--bg);
+}
+.settings-nav-col {
+  flex: 0 0 232px;
+  background: var(--bg-alt);
+  border-right: 1px solid var(--border);
+  padding: var(--space-4) var(--space-2);
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.settings-nav-title {
+  font-size: var(--fs-xs);
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--text-dim);
+  padding: var(--space-2) var(--space-3);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.settings-nav-group {
+  font-size: var(--fs-xs);
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--text-dim);
+  padding: var(--space-3) var(--space-3) var(--space-1);
+}
+/* Scoped under .settings-page so they win over the (same-named) user-settings
+   modal rules above (which set max-height/padding/active-color we don't want). */
+.settings-page .settings-nav-item {
+  text-align: left;
+  background: transparent;
+  border: none;
+  color: var(--text-dim);
+  padding: var(--space-2) var(--space-3);
+  border-radius: var(--radius-sm);
+  font-size: var(--fs-md);
+  font-weight: 500;
+  cursor: pointer;
+}
+.settings-page .settings-nav-item:hover {
+  background: var(--bg-input);
+  color: var(--text);
+}
+.settings-page .settings-nav-item.active {
+  background: var(--bg-input);
+  color: var(--text);
+}
+.settings-page .settings-nav-item.danger {
+  color: var(--danger);
+}
+.settings-page .settings-nav-item.danger:hover {
+  background: var(--danger);
+  color: #fff;
+}
+.settings-nav-sep {
+  height: 1px;
+  background: var(--border);
+  margin: var(--space-2) var(--space-3);
+}
+.settings-page .settings-content {
+  flex: 1;
+  min-width: 0;
+  padding: var(--space-5);
+  /* Reserve room on the right so content (e.g. the Roles header's "New role"
+     button) never renders under the fixed close button, even when the window is
+     narrow. */
+  padding-right: 76px;
+  overflow-y: auto;
+  position: relative;
+  /* Override the user-settings modal's .settings-content { max-height: 420px },
+     which would otherwise clip this full-screen panel. */
+  max-height: none;
+  max-width: none;
+}
+/* Keep section content readable on very wide windows without an empty void:
+   the inner content is left-aligned and bounded, the panel bg fills the rest. */
+.settings-page .settings-content > * {
+  max-width: 860px;
+}
+/* The close button is a child of .settings-page (fixed full-screen), so it
+   anchors to the page's top-right corner and never scrolls with content. */
+.settings-close {
+  position: absolute;
+  top: var(--space-4);
+  right: var(--space-4);
+  z-index: 2;
+  width: 40px;
+  height: 40px;
+  border-radius: 50%;
+  background: transparent;
+  border: 1px solid var(--border);
+  color: var(--text-dim);
+  cursor: pointer;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 1px;
+}
+.settings-close:hover {
+  background: var(--bg-input);
+  color: var(--text);
+}
+.settings-close-label {
+  font-size: 8px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+}
+.settings-h {
+  font-size: var(--fs-lg);
+  margin: 0 0 var(--space-4);
+}
+.settings-form {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  max-width: 480px;
+}
+.settings-form .actions,
+.settings-content .actions {
+  margin-top: var(--space-2);
+}
+.settings-content .note {
+  color: var(--text-dim);
+  font-size: var(--fs-sm);
+  background: var(--bg-alt);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  padding: var(--space-3);
+}
+.settings-content .field-help {
+  color: var(--text-dim);
+  font-size: var(--fs-sm);
+  margin: 0 0 var(--space-3);
+}
+.settings-table {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.settings-row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  padding: var(--space-2) var(--space-3);
+  border-radius: var(--radius-sm);
+}
+.settings-row:hover {
+  background: var(--bg-alt);
+}
+.settings-row-main {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+}
+.settings-row-actions {
+  display: flex;
+  gap: var(--space-2);
+  flex: 0 0 auto;
+}
+.audit-verdict {
+  flex: 0 0 auto;
+  font-size: var(--fs-xs);
+  font-weight: 700;
+  text-transform: uppercase;
+  padding: 2px 6px;
+  border-radius: var(--radius-sm);
+  background: var(--bg-input);
+  color: var(--text-dim);
+}
+.audit-verdict.deny,
+.audit-verdict.throttle {
+  color: var(--danger);
+}
+.audit-verdict.flagged {
+  color: var(--warn);
+}
+.audit-verdict.allow {
+  color: var(--ok);
+}
+
+/* Confirm dialog sits above the full-screen settings page (z-index 50). */
+.confirm-backdrop {
+  z-index: 120;
+}
+.confirm-modal {
+  width: 420px;
+}
+.confirm-body {
+  margin: 0;
+  color: var(--text-dim);
+  font-size: var(--fs-md);
+  line-height: 1.55;
+}
+
+/* ---- Roles editor ---- */
+.settings-head-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+}
+.settings-head-row .settings-h {
+  margin-bottom: 0;
+}
+.settings-head-row .btn-sm {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+.roles-layout {
+  display: flex;
+  gap: var(--space-4);
+  margin-top: var(--space-3);
+  align-items: flex-start;
+}
+.roles-list {
+  flex: 0 0 200px;
+  gap: 2px;
+}
+.role-list-item {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  text-align: left;
+  background: transparent;
+  border: none;
+  color: var(--text);
+  padding: var(--space-2) var(--space-3);
+  border-radius: var(--radius-sm);
+  font-size: var(--fs-md);
+  font-weight: 500;
+  cursor: pointer;
+}
+.role-list-item:hover {
+  background: var(--bg-alt);
+}
+.role-list-item.active {
+  background: var(--bg-input);
+}
+.role-dot {
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  background: var(--accent);
+  flex: 0 0 auto;
+}
+.role-list-name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.role-editor {
+  flex: 1;
+  min-width: 0;
+  background: var(--bg-alt);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  padding: var(--space-4);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}
+.role-editor.empty {
+  align-items: center;
+  justify-content: center;
+  min-height: 160px;
+}
+.perm-list {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.perm-row {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-3);
+  padding: var(--space-2) var(--space-3);
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+}
+.perm-row:hover {
+  background: var(--bg-input);
+}
+.perm-row input {
+  margin-top: 3px;
+  flex: 0 0 auto;
+}
+.perm-admin {
+  border: 1px solid rgba(224, 160, 48, 0.25);
+}
+.perm-text {
+  display: flex;
+  flex-direction: column;
+}
+.perm-label {
+  font-size: var(--fs-md);
+  color: var(--text);
+}
+.perm-hint {
+  font-size: var(--fs-xs);
+  color: var(--text-dim);
+}
+.role-editor-actions {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  margin-top: var(--space-2);
+}
+.role-editor-actions .spacer {
+  flex: 1;
+}
+.btn-danger-text {
+  color: var(--danger);
+}
+.btn-danger-text:hover:not(:disabled) {
+  background: var(--danger);
+  color: #fff;
+}
+
+/* ---- Member role chips + assignment ---- */
+.member-roles {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.member-role-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: var(--fs-xs);
+  padding: 1px 4px 1px 8px;
+  border-radius: var(--radius-pill);
+  background: var(--bg-input);
+  color: var(--text-dim);
+}
+.chip-x {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  padding: 0;
+  border-radius: 50%;
+  background: transparent;
+  color: var(--text-dim);
+  font-size: 10px;
+}
+.chip-x:hover:not(:disabled) {
+  background: var(--danger);
+  color: #fff;
+}
+.role-assign-select {
+  flex: 0 0 auto;
+  width: auto;
+  padding: 4px 8px;
+  font-size: var(--fs-sm);
+  background: var(--bg-input);
+  border: 1px solid var(--border);
+  color: var(--text);
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+}
+
+/* ---- Roles: drag-reorder list, colored dots/icons ---- */
+.roles-list .role-list-item {
+  cursor: pointer;
+}
+.role-list-item[draggable="true"] {
+  cursor: grab;
+}
+.role-list-item.dragging {
+  opacity: 0.4;
+}
+/* Drop indicator: an accent line above the row the dragged role will land on. */
+.role-list-item {
+  position: relative;
+}
+.role-list-item.drop-above::before {
+  content: "";
+  position: absolute;
+  left: 4px;
+  right: 4px;
+  top: -2px;
+  height: 3px;
+  border-radius: 2px;
+  background: var(--accent);
+  box-shadow: 0 0 0 1px var(--bg);
+}
+.role-dot {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+}
+.role-dot-icon,
+.member-role-icon {
+  width: 16px;
+  height: 16px;
+  border-radius: 4px;
+  object-fit: cover;
+}
+.member-role-icon {
+  flex: 0 0 auto;
+  margin-left: 2px;
+}
+
+/* ---- Roles: editor header + tabs ---- */
+.role-editor-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+}
+.role-editor-title {
+  font-size: var(--fs-md);
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  color: var(--text-dim);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.role-editor-rolename {
+  color: var(--text);
+  text-transform: none;
+  letter-spacing: 0;
+}
+.icon-btn {
+  width: 32px;
+  height: 32px;
+  padding: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: transparent;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  color: var(--text-dim);
+  flex: 0 0 auto;
+}
+.icon-btn.danger:hover:not(:disabled) {
+  background: var(--danger);
+  color: #fff;
+}
+.role-tabs {
+  display: flex;
+  gap: var(--space-4);
+  border-bottom: 1px solid var(--border);
+  margin-bottom: var(--space-2);
+}
+.role-tab {
+  background: transparent;
+  border: none;
+  border-bottom: 2px solid transparent;
+  color: var(--text-dim);
+  padding: var(--space-2) 2px;
+  font-size: var(--fs-md);
+  font-weight: 600;
+  border-radius: 0;
+  cursor: pointer;
+}
+.role-tab:hover {
+  color: var(--text);
+  background: transparent;
+}
+.role-tab.active {
+  color: var(--accent);
+  border-bottom-color: var(--accent);
+}
+
+/* ---- Roles: color swatches ---- */
+.color-swatches {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-bottom: var(--space-3);
+}
+.color-swatch {
+  width: 30px;
+  height: 30px;
+  padding: 0;
+  border-radius: var(--radius-sm);
+  border: 2px solid transparent;
+  cursor: pointer;
+}
+.color-swatch.active {
+  border-color: var(--text);
+  box-shadow: 0 0 0 2px var(--bg);
+}
+.color-swatch.none {
+  background: var(--bg-input);
+  color: var(--text-dim);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+.color-swatch.custom {
+  position: relative;
+  background: conic-gradient(red, yellow, lime, aqua, blue, magenta, red);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+}
+.color-swatch.custom input {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  opacity: 0;
+  cursor: pointer;
+  padding: 0;
+  margin: 0;
+}
+
+/* ---- Roles: icon picker ---- */
+.role-icon-row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  margin-bottom: var(--space-3);
+}
+.role-icon-preview {
+  width: 48px;
+  height: 48px;
+  flex: 0 0 auto;
+  border-radius: var(--radius-md);
+  background: var(--bg-input);
+  border: 1px solid var(--border);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--text-dim);
+  overflow: hidden;
+}
+.role-icon-preview img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+.file-btn {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  cursor: pointer;
+  overflow: hidden;
+}
+.file-btn input {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  opacity: 0;
+  cursor: pointer;
+}
+
+/* ---- Toggle rows (Display tab + permission switches) ---- */
+.toggle-row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-4);
+  padding: var(--space-3) 0;
+  border-top: 1px solid var(--border);
+}
+.toggle-text {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.toggle-title {
+  font-size: var(--fs-md);
+  font-weight: 600;
+  color: var(--text);
+}
+.toggle-desc {
+  font-size: var(--fs-sm);
+  color: var(--text-dim);
+  line-height: 1.5;
+}
+
+/* A pill toggle switch built from a checkbox. */
+input.switch {
+  appearance: none;
+  -webkit-appearance: none;
+  flex: 0 0 auto;
+  width: 40px;
+  height: 24px;
+  margin: 0;
+  border-radius: 999px;
+  background: var(--bg-input);
+  border: 1px solid var(--border);
+  position: relative;
+  cursor: pointer;
+  transition: background 0.15s ease;
+}
+input.switch::before {
+  content: "";
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  background: var(--text-dim);
+  transition: transform 0.15s ease, background 0.15s ease;
+}
+input.switch:checked {
+  background: var(--accent);
+  border-color: var(--accent);
+}
+input.switch:checked::before {
+  transform: translateX(16px);
+  background: #fff;
+}
+input.switch:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+/* ---- Permissions tab: categorized groups + full descriptions ---- */
+.perm-group {
+  margin-bottom: var(--space-4);
+}
+.perm-group-title {
+  font-size: var(--fs-md);
+  font-weight: 700;
+  margin: var(--space-3) 0 var(--space-2);
+  padding-bottom: var(--space-2);
+  border-bottom: 1px solid var(--border);
+}
+.perm-group .perm-row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-4);
+  padding: var(--space-3) 0;
+  border-bottom: 1px solid var(--border);
+  cursor: default;
+}
+.perm-group .perm-row:hover {
+  background: transparent;
+}
+.perm-group .perm-text {
+  flex: 1;
+  min-width: 0;
+}
+.perm-group .perm-label {
+  font-size: var(--fs-md);
+  font-weight: 600;
+  color: var(--text);
+  display: block;
+  margin-bottom: 2px;
+}
+.perm-desc {
+  font-size: var(--fs-sm);
+  color: var(--text-dim);
+  line-height: 1.5;
+}
+.perm-row.perm-admin {
+  border: 1px solid rgba(224, 160, 48, 0.25);
+  border-radius: var(--radius-sm);
+  padding: var(--space-3);
+}
+
+/* ---- Sticky unsaved-changes bar ---- */
+.unsaved-bar {
+  position: absolute;
+  left: 232px;
+  right: 0;
+  bottom: var(--space-3);
+  margin: 0 var(--space-4);
+  z-index: 3;
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  padding: var(--space-3) var(--space-4);
+  background: #14151a;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  box-shadow: 0 8px 28px rgba(0, 0, 0, 0.45);
+}
+.unsaved-text {
+  flex: 1;
+  font-size: var(--fs-md);
+  color: var(--text);
+}
+.link-btn {
+  background: transparent;
+  border: none;
+  color: var(--text-dim);
+  padding: 6px 10px;
+  font-size: var(--fs-md);
+}
+.link-btn:hover:not(:disabled) {
+  background: transparent;
+  color: var(--text);
+  text-decoration: underline;
+}
+.btn-save {
+  background: var(--ok);
+  color: #08130b;
+  font-weight: 700;
+}
+.btn-save:hover:not(:disabled) {
+  filter: brightness(1.08);
+  background: var(--ok);
+}
+
+/* ---- Tavern icon + banner ---- */
+.rail-icon {
+  width: 100%;
+  height: 100%;
+  border-radius: inherit;
+  object-fit: cover;
+}
+.tavern-header-icon {
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  object-fit: cover;
+  flex: 0 0 auto;
+  margin-right: 8px;
+}
+.tavern-banner {
+  width: 100%;
+  aspect-ratio: 640 / 240;
+  overflow: hidden;
+  background: var(--bg-input);
+}
+.tavern-banner img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+/* When a banner is present, let the header overlap it slightly for depth. */
+.tavern-header-bar.with-banner {
+  margin-top: -10px;
+  border-top-left-radius: var(--radius-md);
+  border-top-right-radius: var(--radius-md);
+  background: var(--bg);
+  position: relative;
+}
+/* Settings: icon + banner previews. */
+.tavern-icon-preview {
+  width: 64px;
+  height: 64px;
+  flex: 0 0 auto;
+  border-radius: 50%;
+  background: var(--accent-dim);
+  color: #fff;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 24px;
+  font-weight: 700;
+  overflow: hidden;
+}
+.tavern-icon-preview img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+.tavern-banner-edit {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  margin-bottom: var(--space-3);
+}
+.tavern-banner-preview {
+  width: 100%;
+  max-width: 480px;
+  aspect-ratio: 640 / 240;
+  border-radius: var(--radius-md);
+  border: 1px solid var(--border);
+  background: var(--bg-input);
+  overflow: hidden;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.tavern-banner-preview img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+.tavern-banner-empty {
+  color: var(--text-dim);
+  font-size: var(--fs-sm);
+}
+
+/* ---- Member list: hoisted role sections ---- */
+.member-section {
+  margin-bottom: var(--space-3);
+}
+.member-section-header {
+  font-size: var(--fs-xs);
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--text-dim);
+  padding: var(--space-2) var(--space-3) 4px;
 }

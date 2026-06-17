@@ -1,9 +1,9 @@
 //! Channel-name heuristics for anti-griefing.
 //!
 //! Two cheap, dependency-free signals catch the common raid patterns:
-//! * **Random-string names** (`xk7f2qz`, `aaaa1111`) — low vowel ratio, high
+//! * **Random-string names** (`xk7f2qz`, `aaaa1111`) - low vowel ratio, high
 //!   digit ratio, or very low character variety.
-//! * **Low-variance spam** — a new name nearly identical to several recent
+//! * **Low-variance spam** - a new name nearly identical to several recent
 //!   channel names (`raid-1`, `raid-2`, `raid-3` …), via normalized edit
 //!   distance.
 //!

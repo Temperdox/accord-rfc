@@ -3,12 +3,14 @@
 
 use accord_proto::auth_service_server::AuthService;
 use accord_proto::{
-    CreateInviteRequest, CreateInviteResponse, DeviceId, LoginRequest, LoginResponse,
-    LookupUserRequest, LookupUserResponse, RefreshTokenRequest, RefreshTokenResponse,
-    RegisterDeviceRequest, RegisterDeviceResponse, RegisterRequest, RegisterResponse,
-    RevokeDeviceRequest, RevokeDeviceResponse, RevokeInviteRequest, RevokeInviteResponse, UserId,
+    ChallengeRequest, ChallengeResponse, CreateInviteRequest, CreateInviteResponse, DeviceId,
+    KeyLoginRequest, LoginRequest, LoginResponse, LookupUserRequest, LookupUserResponse,
+    RefreshTokenRequest, RefreshTokenResponse, RegisterDeviceRequest, RegisterDeviceResponse,
+    RegisterRequest, RegisterResponse, RevokeDeviceRequest, RevokeDeviceResponse,
+    RevokeInviteRequest, RevokeInviteResponse, UserId,
 };
 use accord_types::perms::Permissions;
+use ed25519_dalek::{Signature, VerifyingKey};
 use std::sync::Arc;
 
 use chrono::Utc;
@@ -17,8 +19,9 @@ use uuid::Uuid;
 
 use crate::auth::jwt::JwtKeys;
 use crate::auth::password::{hash_password, verify_password};
-use crate::error::ServerError;
+use crate::error::{ServerError, ServerResult};
 use crate::store::Store;
+use crate::store::model::UserRow;
 use crate::util::authenticate;
 
 /// How long refresh tokens stay valid.
@@ -81,6 +84,72 @@ impl AuthSvc {
         entries.push(now);
         Ok(())
     }
+
+    /// Issue a session for an authenticated user: find-or-create the device, do
+    /// the walking-skeleton `#general` auto-join, mint the access + refresh
+    /// tokens, and build the [`LoginResponse`]. Shared by password login and
+    /// key login so both paths behave identically once the caller is verified.
+    async fn issue_session(&self, user: &UserRow, device_name: &str) -> ServerResult<LoginResponse> {
+        let device_name = if device_name.trim().is_empty() {
+            "Unknown device"
+        } else {
+            device_name.trim()
+        };
+        // Reuse this install's device row across logins (clients send a stable
+        // per-install device name); the mailbox + Welcome inbox are keyed by it.
+        let device_id = match self.store.find_device(user.id, device_name).await? {
+            Some(existing) => existing,
+            None => self.store.create_device(user.id, device_name).await?,
+        };
+
+        // Ensure non-guest accounts land in the default `#general` channel.
+        if !user.is_guest {
+            if let Ok(default_channel) = Uuid::parse_str(crate::groups::DEFAULT_PUBLIC_CHANNEL_ID) {
+                if let Err(e) = self.store.add_member(default_channel, user.id, "member").await {
+                    tracing::warn!(error = %e, "could not auto-join #general");
+                }
+            }
+        }
+
+        let access_token = self.jwt.issue(user.id.into(), device_id.into())?;
+        let refresh_token = Uuid::now_v7().to_string();
+        let expires_at = Utc::now() + chrono::Duration::days(REFRESH_TOKEN_TTL_DAYS);
+        self.store
+            .store_refresh_token(&refresh_token, user.id, device_id, expires_at)
+            .await?;
+
+        tracing::info!(user_id = %user.id, %device_id, "session issued");
+        Ok(LoginResponse {
+            access_token,
+            refresh_token,
+            user_id: Some(UserId {
+                value: user.id.to_string(),
+            }),
+            device_id: Some(DeviceId {
+                value: device_id.to_string(),
+            }),
+        })
+    }
+}
+
+/// Lowercase-hex encode bytes (for the challenge's identity-key binding).
+fn hex_encode(bytes: &[u8]) -> String {
+    bytes.iter().map(|b| format!("{b:02x}")).collect()
+}
+
+/// Whether `ip` is loopback, treating an IPv4-mapped IPv6 address
+/// (`::ffff:127.0.0.1`) as loopback too. This matters because the embedded host
+/// binds the dual-stack wildcard `[::]`, so a client connecting over
+/// `127.0.0.1` is seen as `::ffff:127.0.0.1` - for which `Ipv6Addr::is_loopback`
+/// is false. Without this, the device-owner / first-user (owner) path never
+/// triggers and the owner is wrongly admitted as a guest.
+fn is_loopback(ip: std::net::IpAddr) -> bool {
+    match ip {
+        std::net::IpAddr::V4(v4) => v4.is_loopback(),
+        std::net::IpAddr::V6(v6) => {
+            v6.is_loopback() || v6.to_ipv4_mapped().is_some_and(|m| m.is_loopback())
+        }
+    }
 }
 
 #[tonic::async_trait]
@@ -93,7 +162,7 @@ impl AuthService for AuthSvc {
         // already read the database directly), so local multi-account creation is
         // allowed without an invite; remote/mesh joiners still need one.
         let remote_ip = request.remote_addr().map(|a| a.ip());
-        let is_local = remote_ip.is_some_and(|ip| ip.is_loopback());
+        let is_local = remote_ip.is_some_and(is_loopback);
         // Raid brake: remote registrations are rate-limited per source IP.
         if !is_local {
             if let Some(ip) = remote_ip {
@@ -107,7 +176,18 @@ impl AuthService for AuthSvc {
         if username.is_empty() {
             return Err(ServerError::InvalidArgument("username is required".into()).into());
         }
-        if req.password.len() < MIN_PASSWORD_LEN {
+        // A password is OPTIONAL: an empty password means a key-only account
+        // (authenticated by its identity key via LoginWithKey - how taverns are
+        // joined without a per-tavern password). When present it must be long
+        // enough; when absent an identity key is required.
+        if req.password.is_empty() {
+            if req.identity_pubkey.is_empty() {
+                return Err(ServerError::InvalidArgument(
+                    "a password or an identity key is required".into(),
+                )
+                .into());
+            }
+        } else if req.password.len() < MIN_PASSWORD_LEN {
             return Err(ServerError::InvalidArgument(format!(
                 "password must be at least {MIN_PASSWORD_LEN} characters"
             ))
@@ -120,7 +200,7 @@ impl AuthService for AuthSvc {
         };
 
         // --- invite gating (private servers) ---
-        // The very first account becomes the server owner and needs no invite —
+        // The very first account becomes the server owner and needs no invite -
         // but ONLY from loopback. A freshly created/hosted server binds the
         // network ([::]) before its owner has registered, so without this gate a
         // remote actor who reaches the port (e.g. port-scanning a just-created
@@ -173,7 +253,12 @@ impl AuthService for AuthSvc {
         };
 
         // --- create ---
-        let password_hash = hash_password(&req.password)?;
+        // Key-only accounts store no password hash (login is by identity key).
+        let password_hash = if req.password.is_empty() {
+            String::new()
+        } else {
+            hash_password(&req.password)?
+        };
         let user_id = self
             .store
             .create_user(
@@ -216,54 +301,72 @@ impl AuthService for AuthSvc {
             return Err(Status::permission_denied("this account is banned"));
         }
 
-        let device_name = if req.device_name.trim().is_empty() {
-            "Unknown device"
-        } else {
-            req.device_name.trim()
-        };
-        // Reuse this install's device row across logins (clients send a stable
-        // per-install device name). The mailbox and Welcome inbox are keyed by
-        // device id, so a fresh device per login would orphan everything queued
-        // for the previous one.
-        let device_id = match self.store.find_device(user.id, device_name).await? {
-            Some(existing) => existing,
-            None => self.store.create_device(user.id, device_name).await?,
-        };
+        Ok(Response::new(
+            self.issue_session(&user, &req.device_name).await?,
+        ))
+    }
 
-        // Walking-skeleton convenience: ensure the user is in the default
-        // `#general` channel so they have somewhere to chat immediately. Guests
-        // (open_dms DM-only accounts) are deliberately NOT joined to anything.
-        if !user.is_guest {
-            if let Ok(default_channel) = Uuid::parse_str(crate::groups::DEFAULT_PUBLIC_CHANNEL_ID) {
-                if let Err(e) = self
-                    .store
-                    .add_member(default_channel, user.id, "member")
-                    .await
-                {
-                    tracing::warn!(error = %e, "could not auto-join #general");
-                }
-            }
+    async fn request_challenge(
+        &self,
+        request: Request<ChallengeRequest>,
+    ) -> Result<Response<ChallengeResponse>, Status> {
+        let req = request.into_inner();
+        if req.identity_pubkey.len() != 32 {
+            return Err(ServerError::InvalidArgument("identity key must be 32 bytes".into()).into());
+        }
+        // Bind the challenge to this key + a fresh nonce; the client signs it.
+        let challenge = self
+            .jwt
+            .issue_challenge(&hex_encode(&req.identity_pubkey), &Uuid::now_v7().to_string())?;
+        Ok(Response::new(ChallengeResponse { challenge }))
+    }
+
+    async fn login_with_key(
+        &self,
+        request: Request<KeyLoginRequest>,
+    ) -> Result<Response<LoginResponse>, Status> {
+        let req = request.into_inner();
+
+        let pk_bytes: [u8; 32] = req
+            .identity_pubkey
+            .as_slice()
+            .try_into()
+            .map_err(|_| ServerError::InvalidArgument("identity key must be 32 bytes".into()))?;
+        let sig_bytes: [u8; 64] = req
+            .signature
+            .as_slice()
+            .try_into()
+            .map_err(|_| ServerError::InvalidArgument("signature must be 64 bytes".into()))?;
+
+        // The challenge must be one WE issued (valid signature + unexpired) and
+        // for exactly this identity key - not a client-chosen value.
+        let challenge_for = self.jwt.verify_challenge(&req.challenge)?;
+        if challenge_for != hex_encode(&req.identity_pubkey) {
+            return Err(ServerError::Unauthenticated.into());
         }
 
-        // Mint tokens.
-        let access_token = self.jwt.issue(user.id.into(), device_id.into())?;
-        let refresh_token = Uuid::now_v7().to_string();
-        let expires_at = Utc::now() + chrono::Duration::days(REFRESH_TOKEN_TTL_DAYS);
-        self.store
-            .store_refresh_token(&refresh_token, user.id, device_id, expires_at)
-            .await?;
+        // The signature must verify over the challenge bytes under the claimed
+        // identity key (proves possession of the private key).
+        let verifying_key =
+            VerifyingKey::from_bytes(&pk_bytes).map_err(|_| ServerError::Unauthenticated)?;
+        let signature = Signature::from_bytes(&sig_bytes);
+        verifying_key
+            .verify_strict(req.challenge.as_bytes(), &signature)
+            .map_err(|_| ServerError::Unauthenticated)?;
 
-        tracing::info!(user_id = %user.id, %device_id, "user logged in");
-        Ok(Response::new(LoginResponse {
-            access_token,
-            refresh_token,
-            user_id: Some(UserId {
-                value: user.id.to_string(),
-            }),
-            device_id: Some(DeviceId {
-                value: device_id.to_string(),
-            }),
-        }))
+        // The key must belong to a registered account.
+        let user = self
+            .store
+            .find_user_by_identity(&req.identity_pubkey)
+            .await?
+            .ok_or(ServerError::Unauthenticated)?;
+        if self.store.is_banned(user.id).await? {
+            return Err(Status::permission_denied("this account is banned"));
+        }
+
+        Ok(Response::new(
+            self.issue_session(&user, &req.device_name).await?,
+        ))
     }
 
     async fn refresh_token(
@@ -395,5 +498,25 @@ impl AuthSvc {
             .map_err(|_| ServerError::InvalidArgument("invalid user id in token".into()))?;
         crate::authz::require(self.store.as_ref(), user_id, perm).await?;
         Ok(user_id)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::is_loopback;
+    use std::net::IpAddr;
+
+    #[test]
+    fn loopback_detection_includes_ipv4_mapped() {
+        // Plain loopbacks.
+        assert!(is_loopback("127.0.0.1".parse::<IpAddr>().unwrap()));
+        assert!(is_loopback("::1".parse::<IpAddr>().unwrap()));
+        // The dual-stack case: a 127.0.0.1 connection to a `[::]` listener shows
+        // up as this IPv4-mapped form. It MUST count as loopback (else the
+        // device-owner / first-user-owner path is skipped - the bug this guards).
+        assert!(is_loopback("::ffff:127.0.0.1".parse::<IpAddr>().unwrap()));
+        // Non-loopback stays non-loopback.
+        assert!(!is_loopback("192.168.1.5".parse::<IpAddr>().unwrap()));
+        assert!(!is_loopback("::ffff:192.168.1.5".parse::<IpAddr>().unwrap()));
     }
 }

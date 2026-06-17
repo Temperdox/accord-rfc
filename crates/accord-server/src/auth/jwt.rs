@@ -80,6 +80,61 @@ impl JwtKeys {
     }
 }
 
+/// How long a login challenge is valid (short - it's a single round-trip).
+const CHALLENGE_TTL_SECS: u64 = 120;
+
+/// Claims for a key-login challenge: binds the challenge to a specific identity
+/// key and a short expiry. Signed with the same HMAC secret as access tokens, so
+/// a client cannot forge one - it must come from [`JwtKeys::issue_challenge`].
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct ChallengeClaims {
+    /// The identity public key (hex) this challenge is for.
+    sub: String,
+    /// Distinguishes a challenge from an access token (defense in depth).
+    purpose: String,
+    /// A per-challenge nonce so two challenges for the same key differ.
+    nonce: String,
+    exp: u64,
+    iat: u64,
+}
+
+impl JwtKeys {
+    /// Issue a short-lived challenge token bound to `identity_pubkey_hex`. The
+    /// client signs the returned string with its identity key.
+    ///
+    /// # Errors
+    /// Returns [`ServerError::Token`] if signing fails.
+    pub fn issue_challenge(&self, identity_pubkey_hex: &str, nonce: &str) -> ServerResult<String> {
+        let now = now_secs();
+        let claims = ChallengeClaims {
+            sub: identity_pubkey_hex.to_owned(),
+            purpose: "challenge".to_owned(),
+            nonce: nonce.to_owned(),
+            iat: now,
+            exp: now + CHALLENGE_TTL_SECS,
+        };
+        encode(&Header::new(Algorithm::HS256), &claims, &self.encoding)
+            .map_err(|e| ServerError::Token(e.to_string()))
+    }
+
+    /// Verify a challenge token (signature + expiry + purpose) and return the
+    /// identity-pubkey hex it was issued for.
+    ///
+    /// # Errors
+    /// Returns [`ServerError::Unauthenticated`] for any invalid/expired/wrong
+    /// token.
+    pub fn verify_challenge(&self, token: &str) -> ServerResult<String> {
+        let validation = Validation::new(Algorithm::HS256);
+        let claims = decode::<ChallengeClaims>(token, &self.decoding, &validation)
+            .map(|data| data.claims)
+            .map_err(|_| ServerError::Unauthenticated)?;
+        if claims.purpose != "challenge" {
+            return Err(ServerError::Unauthenticated);
+        }
+        Ok(claims.sub)
+    }
+}
+
 /// Current unix time in seconds.
 fn now_secs() -> u64 {
     use std::time::{SystemTime, UNIX_EPOCH};

@@ -6,7 +6,8 @@ use accord_proto::role_service_server::RoleService;
 use accord_proto::{
     AssignRoleRequest, AssignRoleResponse, CreateRoleRequest, DeleteRoleRequest,
     DeleteRoleResponse, GetMyPermissionsRequest, GetMyPermissionsResponse, ListRolesRequest,
-    ListRolesResponse, Role, UnassignRoleRequest, UnassignRoleResponse, UpdateRoleRequest,
+    ListRolesResponse, ReorderRolesRequest, ReorderRolesResponse, Role, UnassignRoleRequest,
+    UnassignRoleResponse, UpdateRoleRequest,
 };
 use accord_types::perms::Permissions;
 use tonic::{Request, Response, Status};
@@ -16,7 +17,7 @@ use crate::auth::jwt::JwtKeys;
 use crate::authz;
 use crate::error::ServerError;
 use crate::store::Store;
-use crate::store::model::RoleRow;
+use crate::store::model::{RoleRow, RoleWrite};
 use crate::util::authenticate;
 
 /// Implements the `RoleService` RPCs.
@@ -74,7 +75,15 @@ impl RoleService for RoleSvc {
         if name.is_empty() {
             return Err(ServerError::InvalidArgument("role name is required".into()).into());
         }
-        let id = self.store.create_role(name, perms.bits() as i64).await?;
+        let write = RoleWrite {
+            name: name.to_string(),
+            permissions: perms.bits() as i64,
+            color: req.color,
+            icon: req.icon,
+            hoist: req.hoist,
+            mentionable: req.mentionable,
+        };
+        let id = self.store.create_role(&write).await?;
         let role = self
             .store
             .get_role(id)
@@ -95,9 +104,23 @@ impl RoleService for RoleSvc {
         let perms = parse_perms(&req.permissions)?;
         self.guard_admin_escalation(caller, perms).await?;
 
-        self.store
-            .update_role(id, req.name.trim(), perms.bits() as i64)
-            .await?;
+        // Hierarchy: a non-owner can only edit roles strictly below their rank.
+        let existing = self
+            .store
+            .get_role(id)
+            .await?
+            .ok_or(ServerError::NotFound("role".into()))?;
+        authz::require_role_below(self.store.as_ref(), caller, existing.position).await?;
+
+        let write = RoleWrite {
+            name: req.name.trim().to_string(),
+            permissions: perms.bits() as i64,
+            color: req.color,
+            icon: req.icon,
+            hoist: req.hoist,
+            mentionable: req.mentionable,
+        };
+        self.store.update_role(id, &write).await?;
         let role = self
             .store
             .get_role(id)
@@ -124,8 +147,49 @@ impl RoleService for RoleSvc {
                 ServerError::InvalidArgument("cannot delete the @everyone role".into()).into(),
             );
         }
+        authz::require_role_below(self.store.as_ref(), caller, role.position).await?;
         self.store.delete_role(id).await?;
         Ok(Response::new(DeleteRoleResponse {}))
+    }
+
+    async fn reorder_roles(
+        &self,
+        request: Request<ReorderRolesRequest>,
+    ) -> Result<Response<ReorderRolesResponse>, Status> {
+        let caller = self.caller(&request)?;
+        authz::require(self.store.as_ref(), caller, Permissions::MANAGE_ROLES).await?;
+        let req = request.into_inner();
+
+        let ids: Vec<Uuid> = req
+            .role_ids
+            .iter()
+            .map(|s| parse_uuid(s, "role id"))
+            .collect::<Result<_, _>>()?;
+
+        // Hierarchy: a non-owner may neither touch a role at/above their rank nor
+        // push any role to a position at/above their rank. The new positions are
+        // n..1 (first id highest); validate both old and new against the rank.
+        let rank = authz::rank(self.store.as_ref(), caller).await?;
+        let n = ids.len() as i32;
+        for (i, id) in ids.iter().enumerate() {
+            let role = self
+                .store
+                .get_role(*id)
+                .await?
+                .ok_or(ServerError::NotFound("role".into()))?;
+            if role.is_default {
+                return Err(ServerError::InvalidArgument(
+                    "the @everyone role cannot be reordered".into(),
+                )
+                .into());
+            }
+            let new_pos = n - i as i32;
+            if rank <= role.position || rank <= new_pos {
+                return Err(ServerError::PermissionDenied.into());
+            }
+        }
+        self.store.reorder_roles(&ids).await?;
+        Ok(Response::new(ReorderRolesResponse {}))
     }
 
     async fn assign_role(
@@ -146,6 +210,10 @@ impl RoleService for RoleSvc {
             .ok_or(ServerError::NotFound("role".into()))?;
         self.guard_admin_escalation(caller, Permissions::from_bits(role.permissions as u64))
             .await?;
+        // Hierarchy: can only grant roles below your rank, and only to members
+        // you outrank.
+        authz::require_role_below(self.store.as_ref(), caller, role.position).await?;
+        authz::require_outranks(self.store.as_ref(), caller, user_id).await?;
 
         self.store.assign_role(user_id, role_id).await?;
         Ok(Response::new(AssignRoleResponse {}))
@@ -160,6 +228,15 @@ impl RoleService for RoleSvc {
         let req = request.into_inner();
         let user_id = require_user_id(&req.user_id)?;
         let role_id = parse_uuid(&req.role_id, "role id")?;
+
+        let role = self
+            .store
+            .get_role(role_id)
+            .await?
+            .ok_or(ServerError::NotFound("role".into()))?;
+        authz::require_role_below(self.store.as_ref(), caller, role.position).await?;
+        authz::require_outranks(self.store.as_ref(), caller, user_id).await?;
+
         self.store.unassign_role(user_id, role_id).await?;
         Ok(Response::new(UnassignRoleResponse {}))
     }
@@ -205,6 +282,10 @@ fn role_to_proto(r: RoleRow) -> Role {
         permissions: (r.permissions as u64).to_string(),
         position: r.position,
         is_default: r.is_default,
+        color: r.color,
+        icon: r.icon,
+        hoist: r.hoist,
+        mentionable: r.mentionable,
     }
 }
 

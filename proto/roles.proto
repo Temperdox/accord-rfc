@@ -22,6 +22,9 @@ service RoleService {
   rpc DeleteRole(DeleteRoleRequest) returns (DeleteRoleResponse);
   rpc AssignRole(AssignRoleRequest) returns (AssignRoleResponse);
   rpc UnassignRole(UnassignRoleRequest) returns (UnassignRoleResponse);
+  // Reorder roles top-to-bottom (highest power first). @everyone is always
+  // pinned to the bottom and must be omitted from the list.
+  rpc ReorderRoles(ReorderRolesRequest) returns (ReorderRolesResponse);
   // The caller's own effective permissions (for the UI to gate actions).
   rpc GetMyPermissions(GetMyPermissionsRequest) returns (GetMyPermissionsResponse);
 }
@@ -30,8 +33,15 @@ message Role {
   string id = 1;
   string name = 2;
   string permissions = 3; // u64 bitfield as a decimal string
+  // Power order: HIGHER position = higher in the list = more power. @everyone is
+  // always position 0 (lowest). Hierarchy gates who you can act on / which roles
+  // you can manage (you can only touch roles/members below your highest role).
   int32 position = 4;
   bool is_default = 5; // the @everyone base role
+  string color = 6; // hex like "#5865f2", or "" for the default text color
+  string icon = 7; // a base64 data URL (small, <=256KB), or "" for none
+  bool hoist = 8; // display members with this role separately in the member list
+  bool mentionable = 9; // anyone may @mention this role
 }
 
 message ListRolesRequest {}
@@ -42,12 +52,20 @@ message ListRolesResponse {
 message CreateRoleRequest {
   string name = 1;
   string permissions = 2;
+  string color = 3;
+  string icon = 4;
+  bool hoist = 5;
+  bool mentionable = 6;
 }
 
 message UpdateRoleRequest {
   string id = 1;
   string name = 2;
   string permissions = 3;
+  string color = 4;
+  string icon = 5;
+  bool hoist = 6;
+  bool mentionable = 7;
 }
 
 message DeleteRoleRequest {
@@ -66,6 +84,13 @@ message UnassignRoleRequest {
   string role_id = 2;
 }
 message UnassignRoleResponse {}
+
+// The new order, top (highest power) to bottom. Omit the @everyone role; it is
+// always pinned to the bottom server-side.
+message ReorderRolesRequest {
+  repeated string role_ids = 1;
+}
+message ReorderRolesResponse {}
 
 message GetMyPermissionsRequest {}
 message GetMyPermissionsResponse {

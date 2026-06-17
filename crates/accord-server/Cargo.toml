@@ -43,6 +43,12 @@ chrono.workspace = true
 # Migration checksum repair only (store/mod.rs): the same hasher sqlx itself
 # uses for migration checksums (sqlx already pulls sha2 in transitively).
 sha2 = "0.10"
+# Ed25519 signature VERIFICATION ONLY, for key-based account auth (the
+# challenge-response login). This is ACCOUNT AUTHENTICATION, not message crypto:
+# the server still never links accord-crypto / accord-mls and never sees
+# plaintext message content (§5). It only verifies a login challenge was signed
+# by the identity key the account registered with.
+ed25519-dalek.workspace = true
 
 # Observability + errors
 tracing.workspace = true

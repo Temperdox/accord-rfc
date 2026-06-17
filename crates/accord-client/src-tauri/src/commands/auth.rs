@@ -117,10 +117,81 @@ pub async fn login(
     // doesn't have it, and upload one if the server has none yet.
     sync_key_backup(&app, &channel, &token, &password).await?;
 
-    // Create this device's MLS engine using the account's per-server derived
-    // identity key as the MLS credential (so peers see the same key the account
-    // is registered with, not the raw user id), then publish a batch of
-    // KeyPackages so peers can start DMs with us.
+    // Shared post-auth setup: MLS engine + KeyPackages, session start, vault sync,
+    // and (home only) DM-reopen + friend sync.
+    finish_session(&app, &state, channel, &username, &user_id, token, refresh_token).await?;
+    Ok(LoginInfo { user_id, device_id })
+}
+
+/// Password-less **key login** for taverns: derive this server's identity key
+/// from the local master, fetch a one-time challenge, sign it, and authenticate.
+/// No password is typed and no key-backup sync runs - key-only accounts have no
+/// password, and the master key already exists locally from the home login.
+#[tauri::command]
+pub async fn login_with_key(
+    app: AppHandle,
+    state: State<'_, SharedSessions>,
+    username: String,
+    device_name: String,
+) -> Result<LoginInfo, String> {
+    use accord_proto::{ChallengeRequest, KeyLoginRequest};
+
+    let channel = require_channel(&state).await?;
+    let (endpoint, cert) = {
+        let sessions = state.lock().await;
+        let s = sessions.active().ok_or("not connected")?;
+        (s.endpoint.clone().unwrap_or_default(), s.cert.clone())
+    };
+
+    // The per-server derived key IS the credential (different per tavern, so a
+    // tavern can't correlate you across servers).
+    let master = crate::identity::load_or_create_master(&app)?;
+    let derived = crate::identity::derive_for(&master, cert.as_deref(), &endpoint);
+    let identity_pubkey = derived.public().to_bytes().to_vec();
+
+    let mut auth = AuthServiceClient::new(channel.clone());
+    let challenge = auth
+        .request_challenge(Request::new(ChallengeRequest {
+            identity_pubkey: identity_pubkey.clone(),
+        }))
+        .await
+        .map_err(status_to_string)?
+        .into_inner()
+        .challenge;
+    let signature = derived.sign(challenge.as_bytes()).to_vec();
+    let resp = auth
+        .login_with_key(Request::new(KeyLoginRequest {
+            identity_pubkey,
+            challenge,
+            signature,
+            device_name: crate::identity::device_name(&app, &device_name),
+        }))
+        .await
+        .map_err(status_to_string)?
+        .into_inner();
+
+    let token = resp.access_token;
+    let refresh_token = resp.refresh_token;
+    let user_id = resp.user_id.map(|u| u.value).unwrap_or_default();
+    let device_id = resp.device_id.map(|d| d.value).unwrap_or_default();
+
+    finish_session(&app, &state, channel, &username, &user_id, token, refresh_token).await?;
+    Ok(LoginInfo { user_id, device_id })
+}
+
+/// Shared post-authentication setup used by both password [`login`] and key
+/// [`login_with_key`]: build/restore the MLS engine, publish KeyPackages, attach
+/// credentials to the active session and start its resilient stream, sync the
+/// vault, and (home only) reopen DMs + run a friend sync.
+async fn finish_session(
+    app: &AppHandle,
+    state: &State<'_, SharedSessions>,
+    channel: Channel,
+    username: &str,
+    user_id: &str,
+    token: String,
+    refresh_token: String,
+) -> Result<(), String> {
     let (endpoint, cert, is_home) = {
         let sessions = state.lock().await;
         let is_home = sessions.active.as_deref() == Some("home");
@@ -131,16 +202,14 @@ pub async fn login(
             is_home,
         )
     };
-    // Get this account's MLS engine, in priority order: the local cache (fast
-    // restart), then the encrypted server vault (survives a reinstall), then a
-    // fresh engine. The home server's only MLS use is DMs, so its engine signs
-    // with the stable **contact identity** (so peers recognize the DM as us);
-    // taverns use the unlinkable per-server derived key.
-    let master = crate::identity::load_or_create_master(&app)?;
-    let mls = if let Some(local) = crate::mls_persist::load(&app, &user_id) {
+    // MLS engine in priority order: local cache, encrypted server vault, then a
+    // fresh engine. Home signs DMs with the stable contact identity; taverns use
+    // the unlinkable per-server derived key.
+    let master = crate::identity::load_or_create_master(app)?;
+    let mls = if let Some(local) = crate::mls_persist::load(app, user_id) {
         local
     } else if let Some(restored) =
-        crate::vault::get_sealed(&app, &channel, &token, &master, crate::vault::MLS_STATE)
+        crate::vault::get_sealed(app, &channel, &token, &master, crate::vault::MLS_STATE)
             .await
             .and_then(|bytes| MlsEngine::from_serialized(&bytes).ok())
     {
@@ -165,19 +234,15 @@ pub async fn login(
         .map_err(status_to_string)?;
     let engine = Arc::new(Mutex::new(mls));
 
-    // Pull any private-message history archives from the vault (reinstall case),
-    // then start the debounced vault sync and mark local archives for catch-up.
-    crate::history::restore_all(&app, &channel, &token, &master, &user_id).await;
-    crate::sync::spawn_flusher(&app).await;
-    crate::history::mark_all_local_dirty(&app, &user_id).await;
+    crate::history::restore_all(app, &channel, &token, &master, user_id).await;
+    crate::sync::spawn_flusher(app).await;
+    crate::history::mark_all_local_dirty(app, user_id).await;
 
-    // Publish credentials onto the active session before starting its stream
-    // supervisor, which reads the token from the session and keeps it fresh.
     let server_id = {
         let mut sessions = state.lock().await;
         let server_id = sessions.active.clone().ok_or("not connected")?;
         if let Some(s) = sessions.active_mut() {
-            s.user_id = Some(user_id.clone());
+            s.user_id = Some(user_id.to_owned());
             s.token = Some(token);
             s.refresh_token = Some(refresh_token);
             s.engine = Some(engine.clone());
@@ -185,39 +250,27 @@ pub async fn login(
         server_id
     };
 
-    // Start a resilient session for this server: self-reconnecting stream +
-    // periodic token refresh. Sets the session's outbound and returns once the
-    // first connection is up. Other servers' sessions keep running concurrently.
     messaging::start_session(
         app.clone(),
         server_id,
         channel.clone(),
-        user_id.clone(),
+        user_id.to_owned(),
         engine.clone(),
     )
     .await?;
 
-    // Now that the session holds the channel + token, persist locally and sync
-    // the snapshot (with the freshly-generated KeyPackages) to the server vault.
-    crate::mls_persist::persist(&app, &engine, &user_id).await;
+    crate::mls_persist::persist(app, &engine, user_id).await;
 
-    // After a home login: remember the account for the login-screen pills (on
-    // success, not at register, so a failed signup never leaves a phantom pill;
-    // first recorded = main account), then reconnect persisted contact DMs in
-    // the background so the DM list survives restarts (best-effort).
     if is_home {
-        crate::commands::accounts::record(&app, &username);
+        crate::commands::accounts::record(app, username);
         let app2 = app.clone();
-        let display = username.clone();
+        let display = username.to_owned();
         tauri::async_runtime::spawn(async move {
             crate::commands::mls::reopen_dm_targets(&app2, &display).await;
-            // Deliver any queued friend requests/acceptances and consume
-            // acceptances parked for us while we were away.
             crate::commands::friends::background_sync(&app2, &display).await;
         });
     }
-
-    Ok(LoginInfo { user_id, device_id })
+    Ok(())
 }
 
 /// Recover the master identity key from the server's encrypted backup when this

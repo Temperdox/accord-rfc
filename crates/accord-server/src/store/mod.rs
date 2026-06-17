@@ -24,7 +24,8 @@ use uuid::Uuid;
 use crate::error::ServerResult;
 use model::{
     AuditRow, BackupRow, BanRow, ClaimedKeyPackage, FriendRequestRow, GroupSummaryRow, InboxRow,
-    MemberRow, PrivateMessageRow, PublicMessageRow, RefreshRow, RoleRow, TavernRow, UserRow,
+    MemberRow, PrivateMessageRow, PublicMessageRow, RefreshRow, RoleRow, RoleWrite, TavernRow,
+    UserRow,
 };
 
 /// Most unconsumed KeyPackages kept per device. Clients re-publish a batch on
@@ -70,6 +71,9 @@ pub trait Store: Send + Sync + std::fmt::Debug {
         identity_pubkey: Option<&[u8]>,
     ) -> ServerResult<Uuid>;
     async fn find_user_by_username(&self, username: &str) -> ServerResult<Option<UserRow>>;
+    /// Find a user by their registered identity public key (for key-based login).
+    async fn find_user_by_identity(&self, identity_pubkey: &[u8])
+    -> ServerResult<Option<UserRow>>;
     /// Whether the given user is a guest (open_dms DM-only account).
     async fn is_user_guest(&self, user_id: Uuid) -> ServerResult<bool>;
     /// Public profile bits `(username, display_name)` of a user, if they exist.
@@ -92,14 +96,21 @@ pub trait Store: Send + Sync + std::fmt::Debug {
     /// Create the `@everyone` default role with `permissions` if it doesn't exist.
     async fn ensure_default_role(&self, id: Uuid, name: &str, permissions: i64)
     -> ServerResult<()>;
-    async fn create_role(&self, name: &str, permissions: i64) -> ServerResult<Uuid>;
+    /// Create a role just above @everyone (position = current max + 1).
+    async fn create_role(&self, write: &RoleWrite) -> ServerResult<Uuid>;
     async fn list_roles(&self) -> ServerResult<Vec<RoleRow>>;
     async fn get_role(&self, id: Uuid) -> ServerResult<Option<RoleRow>>;
-    async fn update_role(&self, id: Uuid, name: &str, permissions: i64) -> ServerResult<()>;
+    async fn update_role(&self, id: Uuid, write: &RoleWrite) -> ServerResult<()>;
     async fn delete_role(&self, id: Uuid) -> ServerResult<()>;
+    /// Set role positions from a top-to-bottom (highest power first) id list;
+    /// the @everyone default stays at position 0. Unlisted roles are untouched.
+    async fn reorder_roles(&self, ordered_top_first: &[Uuid]) -> ServerResult<()>;
     async fn assign_role(&self, user_id: Uuid, role_id: Uuid) -> ServerResult<()>;
     async fn unassign_role(&self, user_id: Uuid, role_id: Uuid) -> ServerResult<()>;
     async fn roles_for_user(&self, user_id: Uuid) -> ServerResult<Vec<RoleRow>>;
+    /// The highest `position` among the user's assigned roles, or 0 (@everyone)
+    /// if they have none. Used for role hierarchy checks.
+    async fn highest_role_position(&self, user_id: Uuid) -> ServerResult<i32>;
     /// Combined permission bits: the default role OR'd with the user's assigned
     /// roles. (Owner/ADMINISTRATOR overrides are applied above the store.)
     async fn member_permissions(&self, user_id: Uuid) -> ServerResult<i64>;
@@ -162,7 +173,7 @@ pub trait Store: Send + Sync + std::fmt::Debug {
     async fn add_member(&self, group_id: Uuid, user_id: Uuid, role: &str) -> ServerResult<()>;
     /// Remove one member from a group (kick / self-leave). No-op if not a member.
     async fn remove_member(&self, group_id: Uuid, user_id: Uuid) -> ServerResult<()>;
-    /// Delete a group and its membership/messages (FK cascade). Public only —
+    /// Delete a group and its membership/messages (FK cascade). Public only -
     /// callers must not route private (MLS) groups here.
     async fn delete_group(&self, group_id: Uuid) -> ServerResult<()>;
     async fn is_member(&self, group_id: Uuid, user_id: Uuid) -> ServerResult<bool>;
@@ -191,6 +202,7 @@ pub trait Store: Send + Sync + std::fmt::Debug {
         name: &str,
         icon_url: &str,
         description: &str,
+        banner_url: &str,
     ) -> ServerResult<()>;
 
     // --- moderation (bans + audit) ---

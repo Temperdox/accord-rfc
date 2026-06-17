@@ -85,6 +85,7 @@ dependencies = [
  "argon2",
  "async-trait",
  "chrono",
+ "ed25519-dalek",
  "figment",
  "futures",
  "jsonwebtoken",

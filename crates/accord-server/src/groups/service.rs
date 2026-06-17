@@ -4,7 +4,7 @@
 //! (delete, member list, identity) and moderation (kick/ban). Private (MLS) group
 //! creation carries the initial Commit + Welcomes (the server stays an opaque
 //! relay). Privileged mutations are gated by RBAC ([`crate::authz`]) AND the
-//! guardrail/auto-mod layer ([`crate::guardrails`]) — the latter rate-limits and
+//! guardrail/auto-mod layer ([`crate::guardrails`]) - the latter rate-limits and
 //! flags hostile actions even for admins, audits them, and alerts owner/admins.
 
 use std::sync::Arc;
@@ -12,13 +12,14 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use accord_proto::group_service_server::GroupService;
 use accord_proto::{
-    AddMembersRequest, AddMembersResponse, BanInfo, BanMemberRequest, BanMemberResponse, ChatKind,
-    CreateGroupResponse, CreatePrivateGroupRequest, CreatePublicGroupRequest, DeleteGroupRequest,
-    DeleteGroupResponse, GetGroupInfoRequest, GetGroupInfoResponse, GetTavernRequest, GroupId,
-    GroupSummary, KickMemberRequest, KickMemberResponse, ListBansRequest, ListBansResponse,
-    ListGroupsRequest, ListGroupsResponse, ListMembersRequest, ListMembersResponse, MemberInfo,
-    ModAlert, RemoveMembersRequest, RemoveMembersResponse, Severity, TavernInfo,
-    UnbanMemberRequest, UnbanMemberResponse, UpdateTavernRequest, UserId,
+    AddMembersRequest, AddMembersResponse, AuditEntry, BanInfo, BanMemberRequest, BanMemberResponse,
+    ChatKind, CreateGroupResponse, CreatePrivateGroupRequest, CreatePublicGroupRequest,
+    DeleteGroupRequest, DeleteGroupResponse, GetGroupInfoRequest, GetGroupInfoResponse,
+    GetTavernRequest, GroupId, GroupSummary, KickMemberRequest, KickMemberResponse,
+    ListAuditRequest, ListAuditResponse, ListBansRequest, ListBansResponse, ListGroupsRequest,
+    ListGroupsResponse, ListMembersRequest, ListMembersResponse, MemberInfo, ModAlert,
+    RemoveMembersRequest, RemoveMembersResponse, Severity, TavernInfo, UnbanMemberRequest,
+    UnbanMemberResponse, UpdateTavernRequest, UserId,
 };
 use accord_types::perms::Permissions;
 use tonic::{Request, Response, Status};
@@ -446,6 +447,7 @@ impl GroupService for GroupSvc {
             icon_url: t.icon_url,
             description: t.description,
             linking_enabled: t.linking_enabled,
+            banner_url: t.banner_url,
         }))
     }
 
@@ -469,6 +471,7 @@ impl GroupService for GroupSvc {
                 req.name.trim(),
                 req.icon_url.trim(),
                 req.description.trim(),
+                req.banner_url.trim(),
             )
             .await?;
         let t = self.store.get_tavern().await?;
@@ -477,6 +480,7 @@ impl GroupService for GroupSvc {
             icon_url: t.icon_url,
             description: t.description,
             linking_enabled: t.linking_enabled,
+            banner_url: t.banner_url,
         }))
     }
 
@@ -492,6 +496,8 @@ impl GroupService for GroupSvc {
 
         if target != caller {
             authz::require(self.store.as_ref(), caller, Permissions::KICK_MEMBERS).await?;
+            // Role hierarchy: you can only kick members you outrank.
+            authz::require_outranks(self.store.as_ref(), caller, target).await?;
             self.guard(caller, ActionClass::KickMember, &target.to_string(), None, &[])
                 .await?;
         }
@@ -513,6 +519,8 @@ impl GroupService for GroupSvc {
         if self.store.is_owner(target).await? {
             return Err(Status::failed_precondition("cannot ban the server owner"));
         }
+        // Role hierarchy: you can only ban members you outrank.
+        authz::require_outranks(self.store.as_ref(), caller, target).await?;
         self.guard(caller, ActionClass::BanMember, &target.to_string(), None, &[])
             .await?;
 
@@ -570,6 +578,34 @@ impl GroupService for GroupSvc {
             })
             .collect();
         Ok(Response::new(ListBansResponse { bans }))
+    }
+
+    async fn list_audit(
+        &self,
+        request: Request<ListAuditRequest>,
+    ) -> Result<Response<ListAuditResponse>, Status> {
+        let claims = authenticate(&request, &self.jwt)?;
+        let caller = parse_uuid(&claims.sub)?;
+        authz::require(self.store.as_ref(), caller, Permissions::MANAGE_SERVER).await?;
+
+        let limit = request.into_inner().limit.clamp(1, 500) as i64;
+        let entries = self
+            .store
+            .list_audit(limit)
+            .await?
+            .into_iter()
+            .map(|a| AuditEntry {
+                actor_id: Some(UserId {
+                    value: a.actor_id.to_string(),
+                }),
+                action: a.action,
+                target: a.target,
+                verdict: a.verdict,
+                reason: a.reason,
+                created_at_ms: a.created_at_ms,
+            })
+            .collect();
+        Ok(Response::new(ListAuditResponse { entries }))
     }
 }
 
