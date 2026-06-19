@@ -228,13 +228,31 @@ impl Store for SqliteStore {
         Ok(row.is_some_and(|(g,)| g != 0))
     }
 
-    async fn user_profile(&self, user_id: Uuid) -> ServerResult<Option<(String, String)>> {
-        let row: Option<(String, String)> =
-            sqlx::query_as("SELECT username, display_name FROM users WHERE id = ?")
+    async fn user_profile(
+        &self,
+        user_id: Uuid,
+    ) -> ServerResult<Option<(String, String, String)>> {
+        let row: Option<(String, String, String)> =
+            sqlx::query_as("SELECT username, display_name, avatar_url FROM users WHERE id = ?")
                 .bind(user_id.to_string())
                 .fetch_optional(&self.pool)
                 .await?;
         Ok(row)
+    }
+
+    async fn update_profile(
+        &self,
+        user_id: Uuid,
+        display_name: &str,
+        avatar_url: &str,
+    ) -> ServerResult<()> {
+        sqlx::query("UPDATE users SET display_name = ?, avatar_url = ? WHERE id = ?")
+            .bind(display_name)
+            .bind(avatar_url)
+            .bind(user_id.to_string())
+            .execute(&self.pool)
+            .await?;
+        Ok(())
     }
 
     async fn count_users(&self) -> ServerResult<i64> {
@@ -646,16 +664,27 @@ impl Store for SqliteStore {
         name: &str,
         description: &str,
         channel_kind: &str,
+        category_id: &str,
     ) -> ServerResult<Uuid> {
         let id = Uuid::now_v7();
+        // Land at the bottom of the target category.
+        let (max_pos,): (i64,) = sqlx::query_as(
+            "SELECT COALESCE(MAX(position), -1) FROM groups WHERE category_id = ?",
+        )
+        .bind(category_id)
+        .fetch_one(&self.pool)
+        .await?;
         sqlx::query(
-            "INSERT INTO groups (id, name, description, kind, channel_kind, created_at)
-             VALUES (?, ?, ?, 'public', ?, ?)",
+            "INSERT INTO groups
+                (id, name, description, kind, channel_kind, category_id, position, created_at)
+             VALUES (?, ?, ?, 'public', ?, ?, ?, ?)",
         )
         .bind(id.to_string())
         .bind(name)
         .bind(description)
         .bind(channel_kind)
+        .bind(category_id)
+        .bind(max_pos + 1)
         .bind(Utc::now().timestamp_millis())
         .execute(&self.pool)
         .await?;
@@ -742,12 +771,12 @@ impl Store for SqliteStore {
 
     async fn list_groups_for_user(&self, user_id: Uuid) -> ServerResult<Vec<GroupSummaryRow>> {
         let rows = sqlx::query(
-            "SELECT g.id, g.name, g.description, g.kind, g.channel_kind,
+            "SELECT g.id, g.name, g.description, g.kind, g.channel_kind, g.category_id, g.position,
                     (SELECT count(*) FROM group_members m2 WHERE m2.group_id = g.id) AS member_count
              FROM groups g
              JOIN group_members m ON m.group_id = g.id
              WHERE m.user_id = ?
-             ORDER BY g.name",
+             ORDER BY g.position, g.name",
         )
         .bind(user_id.to_string())
         .fetch_all(&self.pool)
@@ -761,6 +790,8 @@ impl Store for SqliteStore {
                     kind: r.get("kind"),
                     channel_kind: r.get("channel_kind"),
                     member_count: r.get("member_count"),
+                    category_id: r.get("category_id"),
+                    position: r.get::<i64, _>("position") as i32,
                 })
             })
             .collect()
@@ -768,7 +799,7 @@ impl Store for SqliteStore {
 
     async fn get_group(&self, group_id: Uuid) -> ServerResult<GroupSummaryRow> {
         let row = sqlx::query(
-            "SELECT g.id, g.name, g.description, g.kind, g.channel_kind,
+            "SELECT g.id, g.name, g.description, g.kind, g.channel_kind, g.category_id, g.position,
                     (SELECT count(*) FROM group_members m2 WHERE m2.group_id = g.id) AS member_count
              FROM groups g WHERE g.id = ?",
         )
@@ -783,7 +814,115 @@ impl Store for SqliteStore {
             kind: row.get("kind"),
             channel_kind: row.get("channel_kind"),
             member_count: row.get("member_count"),
+            category_id: row.get("category_id"),
+            position: row.get::<i64, _>("position") as i32,
         })
+    }
+
+    async fn ensure_default_categories(&self) -> ServerResult<()> {
+        let (count,): (i64,) = sqlx::query_as("SELECT count(*) FROM categories")
+            .fetch_one(&self.pool)
+            .await?;
+        if count > 0 {
+            return Ok(());
+        }
+        let text_id = Uuid::now_v7();
+        let voice_id = Uuid::now_v7();
+        let now = Utc::now().timestamp_millis();
+        for (id, name, pos) in [(text_id, "Text Channels", 0), (voice_id, "Voice Channels", 1)] {
+            sqlx::query("INSERT INTO categories (id, name, position, created_at) VALUES (?, ?, ?, ?)")
+                .bind(id.to_string())
+                .bind(name)
+                .bind(pos)
+                .bind(now)
+                .execute(&self.pool)
+                .await?;
+        }
+        // File existing uncategorized channels under the matching category.
+        sqlx::query(
+            "UPDATE groups SET category_id = ? WHERE kind = 'public'
+             AND channel_kind = 'voice' AND category_id = ''",
+        )
+        .bind(voice_id.to_string())
+        .execute(&self.pool)
+        .await?;
+        sqlx::query(
+            "UPDATE groups SET category_id = ? WHERE kind = 'public'
+             AND channel_kind != 'voice' AND category_id = ''",
+        )
+        .bind(text_id.to_string())
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    async fn list_categories(&self) -> ServerResult<Vec<CategoryRow>> {
+        let rows = sqlx::query("SELECT id, name, position FROM categories ORDER BY position, name")
+            .fetch_all(&self.pool)
+            .await?;
+        rows.into_iter()
+            .map(|r| {
+                Ok(CategoryRow {
+                    id: parse_id(r.get("id"))?,
+                    name: r.get("name"),
+                    position: r.get::<i64, _>("position") as i32,
+                })
+            })
+            .collect()
+    }
+
+    async fn create_category(&self, name: &str) -> ServerResult<Uuid> {
+        let id = Uuid::now_v7();
+        let (max_pos,): (i64,) = sqlx::query_as("SELECT COALESCE(MAX(position), -1) FROM categories")
+            .fetch_one(&self.pool)
+            .await?;
+        sqlx::query("INSERT INTO categories (id, name, position, created_at) VALUES (?, ?, ?, ?)")
+            .bind(id.to_string())
+            .bind(name)
+            .bind(max_pos + 1)
+            .bind(Utc::now().timestamp_millis())
+            .execute(&self.pool)
+            .await?;
+        Ok(id)
+    }
+
+    async fn delete_category(&self, id: Uuid) -> ServerResult<()> {
+        sqlx::query("UPDATE groups SET category_id = '' WHERE category_id = ?")
+            .bind(id.to_string())
+            .execute(&self.pool)
+            .await?;
+        sqlx::query("DELETE FROM categories WHERE id = ?")
+            .bind(id.to_string())
+            .execute(&self.pool)
+            .await?;
+        Ok(())
+    }
+
+    async fn reorder_categories(&self, ordered: &[Uuid]) -> ServerResult<()> {
+        let mut tx = self.pool.begin().await?;
+        for (i, id) in ordered.iter().enumerate() {
+            sqlx::query("UPDATE categories SET position = ? WHERE id = ?")
+                .bind(i as i64)
+                .bind(id.to_string())
+                .execute(&mut *tx)
+                .await?;
+        }
+        tx.commit().await?;
+        Ok(())
+    }
+
+    async fn reorder_channels(&self, category_id: &str, ordered: &[Uuid]) -> ServerResult<()> {
+        let mut tx = self.pool.begin().await?;
+        for (i, id) in ordered.iter().enumerate() {
+            sqlx::query("UPDATE groups SET category_id = ?, position = ? WHERE id = ?")
+                .bind(category_id)
+                .bind(i as i64)
+                .bind(id.to_string())
+                .execute(&mut *tx)
+                .await?;
+        }
+        tx.commit().await?;
+        Ok(())
     }
 
     async fn member_ids(&self, group_id: Uuid) -> ServerResult<Vec<Uuid>> {
@@ -818,7 +957,7 @@ impl Store for SqliteStore {
 
     async fn list_members(&self, group_id: Uuid) -> ServerResult<Vec<MemberRow>> {
         let rows = sqlx::query(
-            "SELECT u.id, u.username, u.display_name, u.is_owner
+            "SELECT u.id, u.username, u.display_name, u.is_owner, u.avatar_url
              FROM users u JOIN group_members gm ON gm.user_id = u.id
              WHERE gm.group_id = ?
              ORDER BY u.display_name",
@@ -833,6 +972,7 @@ impl Store for SqliteStore {
                     username: r.get("username"),
                     display_name: r.get("display_name"),
                     is_owner: r.get::<i64, _>("is_owner") != 0,
+                    avatar_url: r.get("avatar_url"),
                 })
             })
             .collect()

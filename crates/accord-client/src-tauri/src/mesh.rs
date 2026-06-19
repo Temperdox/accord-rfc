@@ -369,14 +369,12 @@ pub async fn stop(app: &AppHandle) -> Result<(), String> {
 }
 
 /// Dev command: start mesh networking.
-#[cfg(debug_assertions)]
 #[tauri::command]
 pub async fn dev_start_mesh(app: AppHandle) -> Result<String, String> {
     start(&app).await
 }
 
 /// Dev command: stop mesh networking.
-#[cfg(debug_assertions)]
 #[tauri::command]
 pub async fn dev_stop_mesh(app: AppHandle) -> Result<(), String> {
     stop(&app).await

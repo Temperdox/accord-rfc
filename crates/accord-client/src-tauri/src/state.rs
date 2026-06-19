@@ -32,6 +32,9 @@ pub struct Session {
     pub cert: Option<String>,
     /// The logged-in user's id on this server (keys per-account local state).
     pub user_id: Option<String>,
+    /// This device's id on this server (used to address relayed voice signaling
+    /// and pick a deterministic WebRTC offerer).
+    pub device_id: Option<String>,
     /// JWT access token (refreshed periodically / on demand).
     pub token: Option<String>,
     /// Long-lived refresh token used to mint fresh access tokens.

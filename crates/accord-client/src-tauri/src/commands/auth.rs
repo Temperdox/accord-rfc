@@ -119,7 +119,7 @@ pub async fn login(
 
     // Shared post-auth setup: MLS engine + KeyPackages, session start, vault sync,
     // and (home only) DM-reopen + friend sync.
-    finish_session(&app, &state, channel, &username, &user_id, token, refresh_token).await?;
+    finish_session(&app, &state, channel, &username, &user_id, &device_id, token, refresh_token).await?;
     Ok(LoginInfo { user_id, device_id })
 }
 
@@ -175,7 +175,7 @@ pub async fn login_with_key(
     let user_id = resp.user_id.map(|u| u.value).unwrap_or_default();
     let device_id = resp.device_id.map(|d| d.value).unwrap_or_default();
 
-    finish_session(&app, &state, channel, &username, &user_id, token, refresh_token).await?;
+    finish_session(&app, &state, channel, &username, &user_id, &device_id, token, refresh_token).await?;
     Ok(LoginInfo { user_id, device_id })
 }
 
@@ -189,6 +189,7 @@ async fn finish_session(
     channel: Channel,
     username: &str,
     user_id: &str,
+    device_id: &str,
     token: String,
     refresh_token: String,
 ) -> Result<(), String> {
@@ -243,6 +244,7 @@ async fn finish_session(
         let server_id = sessions.active.clone().ok_or("not connected")?;
         if let Some(s) = sessions.active_mut() {
             s.user_id = Some(user_id.to_owned());
+            s.device_id = Some(device_id.to_owned());
             s.token = Some(token);
             s.refresh_token = Some(refresh_token);
             s.engine = Some(engine.clone());

@@ -24,7 +24,10 @@ import {
 import Fa from "solid-fa";
 import {
   faChevronDown,
+  faChevronRight,
   faComments,
+  faHeadphones,
+  faVolumeXmark,
   faDesktop,
   faFaceSmile,
   faGear,
@@ -52,6 +55,7 @@ import type { IconDefinition } from "@fortawesome/fontawesome-svg-core";
 import * as api from "./api";
 import type { GroupDto } from "./api";
 import * as voice from "./voice";
+import * as voicePrefsMod from "./voicePrefs";
 import NotificationBar from "./NotificationBar";
 import { dismissKey, notify, notifyTransient } from "./notifications";
 
@@ -186,7 +190,11 @@ function AuthScreen(props: { onAuthed: (s: ServerSession) => void }) {
                     class={`account-pill ${picked() === a.username ? "active" : ""}`}
                     onClick={() => pick(a.username)}
                   >
-                    <span class="pill-avatar">{(a.username[0] ?? "?").toUpperCase()}</span>
+                    <span class="pill-avatar">
+                      <Show when={a.avatar} fallback={(a.username[0] ?? "?").toUpperCase()}>
+                        <img src={a.avatar} alt="" />
+                      </Show>
+                    </span>
                     <span class="pill-name">{a.username}</span>
                     <Show when={a.isMain}>
                       <span class="pill-tag">main</span>
@@ -335,6 +343,8 @@ interface UiMessage {
   id: string;
   groupId: string;
   author: string;
+  /** Sender's user id (public channels), for resolving their avatar; "" if unknown. */
+  senderId?: string;
   content: string;
   timestampMs: number;
   /** True while a received (encrypted) history message is still decrypting. */
@@ -388,9 +398,58 @@ function Home(props: { home: ServerSession }) {
   const [encryptAtRest, setEncryptAtRest] = createSignal(false);
   const [friendPolicy, setFriendPolicy] = createSignal<api.FriendRequestPolicy>("everyone");
   const [mesh, setMesh] = createSignal<api.MeshStatus | null>(null);
-  const [settingsTab, setSettingsTab] = createSignal<"privacy" | "friends" | "network" | "nodes">(
-    "privacy"
+  const [settingsTab, setSettingsTab] = createSignal<
+    "profile" | "privacy" | "voice" | "friends" | "network" | "nodes"
+  >("profile");
+  // Voice & Video prefs (client-only; persisted in localStorage) + device lists.
+  const [voicePrefs, setVoicePrefsSig] = createSignal<voicePrefsMod.VoicePrefs>(
+    voicePrefsMod.loadVoicePrefs()
   );
+  const [audioInputs, setAudioInputs] = createSignal<MediaDeviceInfo[]>([]);
+  const [audioOutputs, setAudioOutputs] = createSignal<MediaDeviceInfo[]>([]);
+  // Mic test (loopback + meter): the running test's stop fn + its live level.
+  const [micTestLevel, setMicTestLevel] = createSignal(0);
+  let micTestStop: (() => void) | null = null;
+  const micTesting = () => micTestStop !== null;
+  async function toggleMicTest() {
+    if (micTestStop) {
+      micTestStop();
+      micTestStop = null;
+      setMicTestLevel(0);
+      return;
+    }
+    try {
+      micTestStop = await voice.startMicTest(setMicTestLevel);
+    } catch (e) {
+      setError(String(e));
+    }
+  }
+  /** Stop the mic test if running (on settings close / tab switch). */
+  function stopMicTest() {
+    if (micTestStop) {
+      micTestStop();
+      micTestStop = null;
+      setMicTestLevel(0);
+    }
+  }
+  void voice.setAudioPrefs(voicePrefs()); // apply saved prefs to the voice layer
+  /** Patch + persist voice prefs and push them to the live voice layer. */
+  function updateVoicePrefs(patch: Partial<voicePrefsMod.VoicePrefs>) {
+    const next = { ...voicePrefs(), ...patch };
+    setVoicePrefsSig(next);
+    voicePrefsMod.saveVoicePrefs(next);
+    void voice.setAudioPrefs(next);
+  }
+  /** Enumerate audio input/output devices (labels appear after mic permission). */
+  async function loadAudioDevices() {
+    try {
+      const devs = await navigator.mediaDevices.enumerateDevices();
+      setAudioInputs(devs.filter((d) => d.kind === "audioinput"));
+      setAudioOutputs(devs.filter((d) => d.kind === "audiooutput"));
+    } catch {
+      /* enumeration unavailable */
+    }
+  }
   const [yggMode, setYggMode] = createSignal<api.YggPeerMode>("public");
   const [yggPeersText, setYggPeersText] = createSignal("");
   const [meshConn, setMeshConn] = createSignal<api.MeshConnectStatus | null>(null);
@@ -458,16 +517,58 @@ function Home(props: { home: ServerSession }) {
   const [tavernIcons, setTavernIcons] = createSignal<Record<string, string>>({});
   const [members, setMembers] = createSignal<api.MemberDto[]>([]);
   const [showMembers, setShowMembers] = createSignal(false);
-  const [createChannelOpen, setCreateChannelOpen] = createSignal(false);
+  // Create-channel side panel: the target category id (null = closed; "" = uncategorized).
+  const [createChannelCat, setCreateChannelCat] = createSignal<string | null>(null);
   const [newChannelName, setNewChannelName] = createSignal("");
   const [newChannelKind, setNewChannelKind] = createSignal<"text" | "voice">("text");
+  // Channel categories + which are collapsed.
+  const [categories, setCategories] = createSignal<api.CategoryDto[]>([]);
+  const [collapsedCats, setCollapsedCats] = createSignal<Record<string, boolean>>({});
+  // Drag-and-drop state for channels + categories.
+  const [dragChannelId, setDragChannelId] = createSignal<string | null>(null);
+  const [dragOverChannel, setDragOverChannel] = createSignal<string | null>(null);
+  const [dragCatId, setDragCatId] = createSignal<string | null>(null);
+  const [dragOverCat, setDragOverCat] = createSignal<string | null>(null);
   // group_id -> participants currently in that voice channel.
   const [voiceParticipants, setVoiceParticipants] = createSignal<
     Record<string, api.VoiceParticipant[]>
   >({});
   const [activeVoice, setActiveVoice] = createSignal<string | null>(null);
   const [localVoice, setLocalVoice] = createSignal(voice.initialVoiceState());
+  // Local mic level (0..1) for the speaking indicator under the user pill.
+  const [voiceLevel, setVoiceLevel] = createSignal(0);
+  voice.onLevel(setVoiceLevel);
+  // Remote peers' levels keyed by device id (0..1), for each participant tile.
+  // Only populated for devices we're connected to (i.e. only when in the VC).
+  const [peerLevels, setPeerLevels] = createSignal<Record<string, number>>({});
+  voice.onLevels(setPeerLevels);
+  // This device's id on the active server (to exclude our own echoed
+  // participant entry, since the server fans our join back to us too).
+  const [myDeviceId, setMyDeviceId] = createSignal("");
+  const [deafened, setDeafened] = createSignal(false);
   const [modAlerts, setModAlerts] = createSignal<api.ModAlert[]>([]);
+  // My editable profile on the active server (display name + avatar) + the
+  // Profile-settings editor draft.
+  const [myProfile, setMyProfile] = createSignal<api.ProfileDto | null>(null);
+  const [profName, setProfName] = createSignal("");
+  const [profAvatar, setProfAvatar] = createSignal("");
+  const refreshProfile = () =>
+    api
+      .getMyProfile()
+      .then((p) => {
+        setMyProfile(p);
+        cacheHomeAvatar(p.avatarUrl);
+      })
+      .catch(() => {});
+  /** Cache the home account's avatar for the login picker (home only). */
+  const cacheHomeAvatar = (avatarUrl: string) => {
+    if (activeServerId() === "home") {
+      void api.setAccountAvatar(props.home.username, avatarUrl).catch(() => {});
+    }
+  };
+  /** A member's avatar data-URL by user id (for messages, voice tiles, etc.). */
+  const avatarOf = (userId?: string) =>
+    (userId ? members().find((m) => m.userId === userId)?.avatarUrl : "") ?? "";
 
   const can = (bit: bigint) => api.can(myPerms(), bit);
 
@@ -494,25 +595,108 @@ function Home(props: { home: ServerSession }) {
     publicGroups().filter((g) => g.channelKind !== "voice");
   const voiceChannels = () =>
     publicGroups().filter((g) => g.channelKind === "voice");
+  /** Public channels in a given category (or "" for uncategorized), ordered. */
+  const channelsIn = (catId: string) =>
+    publicGroups()
+      .filter((g) => (g.categoryId || "") === catId)
+      .sort((a, b) => a.position - b.position);
+  const refreshCategories = () =>
+    api.listCategories().then(setCategories).catch(() => setCategories([]));
+  const toggleCategory = (id: string) =>
+    setCollapsedCats((prev) => ({ ...prev, [id]: !prev[id] }));
 
   async function loadGroupsAndSelect() {
-    const gs = await api.listGroups();
+    const [gs] = await Promise.all([api.listGroups(), refreshCategories()]);
     setGroups(gs);
-    setActiveId(gs.length > 0 ? gs[0].id : null);
+    // Pick the first TEXT channel as the landing channel (voice channels are
+    // join-on-click, not a default view).
+    const firstText = gs.find((g) => g.kind !== "private" && g.channelKind !== "voice");
+    setActiveId(firstText?.id ?? (gs.length > 0 ? gs[0].id : null));
     // Tavern context for the active server (best-effort; ignored on failure).
     void refreshPerms();
     void refreshTavern();
+    void refreshProfile();
+    // Load members so messages/voice tiles can resolve avatars by sender id.
+    if (firstText) refreshMembers(firstText.id);
+  }
+
+  /** Open the Profile settings tab, prefilled from the active server's profile. */
+  async function openProfileSettings() {
+    const p = await api.getMyProfile().catch(() => null);
+    if (p) {
+      setMyProfile(p);
+      setProfName(p.displayName);
+      setProfAvatar(p.avatarUrl);
+    }
+  }
+  /** Save the profile draft (display name + avatar) to the active server. */
+  async function saveProfile(e: Event) {
+    e.preventDefault();
+    const name = profName().trim();
+    if (!name) {
+      setError("Display name can't be empty.");
+      return;
+    }
+    try {
+      const p = await api.updateProfile(name, profAvatar());
+      setMyProfile(p);
+      cacheHomeAvatar(p.avatarUrl); // so the login picker shows it next launch
+      refreshMembers(activeId()); // reflect new name/avatar in the member list
+    } catch (err) {
+      setError(String(err));
+    }
+  }
+
+  /** Render one chat message, Discord-style: avatar + name/time + body. The
+   * avatar is the sender's profile pic if set, else their initial. */
+  function renderMsg(m: UiMessage) {
+    if (m.pending) {
+      return (
+        <div class="message pending" aria-busy="true">
+          <span class="msg-avatar glint" />
+          <div class="msg-main">
+            <div class="glint glint-author" />
+            <div class="glint glint-body" />
+          </div>
+        </div>
+      );
+    }
+    // A reactive accessor (not a captured const) so the avatar updates when the
+    // member list / profile changes after the row was first rendered.
+    const avatar = () => avatarOf(m.senderId);
+    return (
+      <div class="message">
+        <span class="msg-avatar">
+          <Show when={avatar()} fallback={<>{(m.author[0] ?? "?").toUpperCase()}</>}>
+            <img src={avatar()} alt="" />
+          </Show>
+        </span>
+        <div class="msg-main">
+          <div class="msg-head">
+            <span class="author">{m.author}</span>
+            <span class="time">{new Date(m.timestampMs).toLocaleTimeString()}</span>
+          </div>
+          <div class="body">{m.content}</div>
+        </div>
+      </div>
+    );
   }
 
   // --- channel create / delete ---
+  /** Open the create-channel side panel targeting a category ("" = uncategorized). */
+  function openCreateChannel(categoryId: string, kind: "text" | "voice" = "text") {
+    setCreateChannelCat(categoryId);
+    setNewChannelKind(kind);
+    setNewChannelName("");
+  }
   async function submitCreateChannel(e: Event) {
     e.preventDefault();
     const name = newChannelName().trim();
     if (!name) return;
     try {
-      await api.createChannel(name, newChannelKind());
+      await api.createChannel(name, newChannelKind(), createChannelCat() ?? "");
       setNewChannelName("");
-      setCreateChannelOpen(false);
+      setCreateChannelCat(null);
       await refreshGroups();
     } catch (err) {
       setError(String(err));
@@ -528,13 +712,219 @@ function Home(props: { home: ServerSession }) {
     }
   }
 
+  // --- categories: create / delete / drag-reorder ---
+  async function createCategoryFlow() {
+    closeMenu();
+    const name = window.prompt("New category name");
+    if (!name || !name.trim()) return;
+    try {
+      await api.createCategory(name.trim());
+      await refreshCategories();
+    } catch (err) {
+      setError(String(err));
+    }
+  }
+  async function deleteCategoryFlow(cat: api.CategoryDto) {
+    const ok = await askConfirm({
+      title: "Delete category",
+      body: `Delete the "${cat.name}" category? Its channels become uncategorized; they are not deleted.`,
+      confirmLabel: "Delete category",
+      danger: true,
+    });
+    if (!ok) return;
+    try {
+      await api.deleteCategory(cat.id);
+      await Promise.all([refreshCategories(), refreshGroups()]);
+    } catch (err) {
+      setError(String(err));
+    }
+  }
+  /** Drop the dragged channel into `catId` before `beforeId` (null = append). */
+  async function dropChannel(catId: string, beforeId: string | null) {
+    const dragged = dragChannelId();
+    setDragChannelId(null);
+    setDragOverChannel(null);
+    if (!dragged) return;
+    const ids = channelsIn(catId)
+      .map((g) => g.id)
+      .filter((id) => id !== dragged);
+    const at = beforeId ? ids.indexOf(beforeId) : ids.length;
+    ids.splice(at < 0 ? ids.length : at, 0, dragged);
+    // Optimistic: update local positions/category before the round-trip.
+    setGroups((prev) =>
+      prev.map((g) =>
+        g.id === dragged
+          ? { ...g, categoryId: catId, position: ids.indexOf(dragged) }
+          : ids.includes(g.id)
+            ? { ...g, position: ids.indexOf(g.id) }
+            : g
+      )
+    );
+    try {
+      await api.reorderChannels(catId, ids);
+      await refreshGroups();
+    } catch (e) {
+      setError(String(e));
+      await refreshGroups();
+    }
+  }
+  /** Render one channel row (text or voice) with drag-reorder + delete. `catId`
+   * is the category the row lives in (drop target for in-category reorder). */
+  function channelRow(g: api.GroupDto, catId: string) {
+    const isVoice = () => g.channelKind === "voice";
+    const isActive = () => (isVoice() ? activeVoice() === g.id : g.id === activeId());
+    return (
+      <>
+        <div
+          class={`channel-row ${isActive() ? "active" : ""} ${dragChannelId() === g.id ? "dragging" : ""} ${dragChannelId() && dragChannelId() !== g.id && dragOverChannel() === g.id ? "drop-above" : ""}`}
+          draggable={can(api.PERM.MANAGE_CHANNELS)}
+          onDragStart={(e) => {
+            setDragChannelId(g.id);
+            if (e.dataTransfer) {
+              e.dataTransfer.effectAllowed = "move";
+              e.dataTransfer.setData("text/plain", g.id);
+            }
+          }}
+          onDragEnd={() => {
+            setDragChannelId(null);
+            setDragOverChannel(null);
+          }}
+          onDragOver={(e) => {
+            if (!dragChannelId()) return;
+            e.preventDefault();
+            e.stopPropagation();
+            if (e.dataTransfer) e.dataTransfer.dropEffect = "move";
+            setDragOverChannel(g.id);
+          }}
+          onDrop={(e) => {
+            if (!dragChannelId()) return;
+            e.preventDefault();
+            e.stopPropagation();
+            dropChannel(catId, g.id);
+          }}
+        >
+          <button
+            class={`channel ${isVoice() ? "voice-channel" : ""}`}
+            onClick={() => (isVoice() ? joinVoiceChannel(g.id) : setActiveId(g.id))}
+          >
+            <span class="hash">
+              <Fa icon={isVoice() ? faVolumeHigh : faHashtag} />
+            </span>
+            {g.name}
+          </button>
+          <Show when={can(api.PERM.MANAGE_CHANNELS)}>
+            <button class="channel-del" title="Delete channel" onClick={() => deleteChannel(g.id)}>
+              <Fa icon={faTrash} />
+            </button>
+          </Show>
+        </div>
+        <Show when={isVoice()}>
+          {/* Your own tile (the server only sends OTHER participants), driven by
+              your local mic level so the indicator works even alone in the call. */}
+          <Show when={activeVoice() === g.id}>
+            <div class="voice-participant">
+              <span class="vp-avatar">
+                <Show
+                  when={myProfile()?.avatarUrl}
+                  fallback={(props.home.username[0] ?? "?").toUpperCase()}
+                >
+                  <img src={myProfile()!.avatarUrl} alt="" />
+                </Show>
+              </span>
+              <span class="vp-name">{myProfile()?.displayName || props.home.username}</span>
+              <span class="vp-icons">
+                <Show when={localVoice().muted}>
+                  <Fa icon={faMicrophoneSlash} />
+                </Show>
+                <Show when={localVoice().cameraOn}>
+                  <Fa icon={faVideo} />
+                </Show>
+                <Show when={localVoice().screenOn}>
+                  <Fa icon={faDesktop} />
+                </Show>
+              </span>
+              <div class="vp-voice-bar">
+                <div
+                  class="vp-voice-level"
+                  style={{ width: `${Math.round(voiceLevel() * 100)}%` }}
+                />
+              </div>
+            </div>
+          </Show>
+          <For each={participantsFor(g.id)}>
+            {(p) => {
+              const label = () => p.displayName || p.username || p.userId.slice(0, 8);
+              // Only present when WE are in the VC (we have this peer's audio).
+              const level = () => peerLevels()[p.deviceId] ?? 0;
+              const avatar = () => avatarOf(p.userId);
+              return (
+                <div class="voice-participant">
+                  <span class="vp-avatar">
+                    <Show when={avatar()} fallback={(label()[0] ?? "?").toUpperCase()}>
+                      <img src={avatar()} alt="" />
+                    </Show>
+                  </span>
+                  <span class="vp-name">{label()}</span>
+                  <span class="vp-icons">
+                    <Show when={p.muted}>
+                      <Fa icon={faMicrophoneSlash} />
+                    </Show>
+                    <Show when={p.cameraOn}>
+                      <Fa icon={faVideo} />
+                    </Show>
+                    <Show when={p.screenOn}>
+                      <Fa icon={faDesktop} />
+                    </Show>
+                  </span>
+                  <Show when={activeVoice() === g.id}>
+                    <div class="vp-voice-bar">
+                      <div
+                        class="vp-voice-level"
+                        style={{ width: `${Math.round(level() * 100)}%` }}
+                      />
+                    </div>
+                  </Show>
+                </div>
+              );
+            }}
+          </For>
+        </Show>
+      </>
+    );
+  }
+
+  /** Drop the dragged category before `beforeId` (null = end). */
+  async function dropCategory(beforeId: string | null) {
+    const dragged = dragCatId();
+    setDragCatId(null);
+    setDragOverCat(null);
+    if (!dragged || dragged === beforeId) return;
+    const ids = categories()
+      .map((c) => c.id)
+      .filter((id) => id !== dragged);
+    const at = beforeId ? ids.indexOf(beforeId) : ids.length;
+    ids.splice(at < 0 ? ids.length : at, 0, dragged);
+    setCategories((prev) =>
+      [...prev].sort((a, b) => ids.indexOf(a.id) - ids.indexOf(b.id))
+    );
+    try {
+      await api.reorderCategories(ids);
+      await refreshCategories();
+    } catch (e) {
+      setError(String(e));
+      await refreshCategories();
+    }
+  }
+
   // --- voice channel join/leave + toggles (media stubbed in voice.ts) ---
   async function joinVoiceChannel(groupId: string) {
     try {
       if (activeVoice() && activeVoice() !== groupId) {
         await voice.leave(activeVoice()!);
       }
-      await voice.join(groupId);
+      const deviceId = await api.getMyDeviceId().catch(() => "");
+      setMyDeviceId(deviceId);
+      await voice.join(groupId, deviceId);
       setActiveVoice(groupId);
       setLocalVoice({ ...voice.initialVoiceState(), groupId });
     } catch (err) {
@@ -552,12 +942,32 @@ function Home(props: { home: ServerSession }) {
     }
     setActiveVoice(null);
     setLocalVoice(voice.initialVoiceState());
+    setDeafened(false);
   }
 
   const toggleMute = async () => {
     const s = localVoice();
+    // Unmuting while deafened also un-deafens (matches Discord).
+    if (s.muted && deafened()) {
+      voice.setDeafened(false);
+      setDeafened(false);
+    }
     await voice.setMuted(s, !s.muted);
     setLocalVoice({ ...s, muted: !s.muted });
+  };
+  /** Deafen = silence everyone else's audio; per convention it also mutes you. */
+  const toggleDeafen = async () => {
+    const next = !deafened();
+    setDeafened(next);
+    voice.setDeafened(next);
+    const s = localVoice();
+    if (next && !s.muted) {
+      await voice.setMuted(s, true);
+      setLocalVoice({ ...s, muted: true });
+    } else if (!next && s.muted) {
+      await voice.setMuted(s, false);
+      setLocalVoice({ ...s, muted: false });
+    }
   };
   const toggleCamera = async () => {
     const s = localVoice();
@@ -570,7 +980,8 @@ function Home(props: { home: ServerSession }) {
     setLocalVoice({ ...s, screenOn: !s.screenOn });
   };
 
-  const participantsFor = (groupId: string) => voiceParticipants()[groupId] ?? [];
+  const participantsFor = (groupId: string) =>
+    (voiceParticipants()[groupId] ?? []).filter((p) => p.deviceId !== myDeviceId());
   /** Label for the voice panel: the voice channel's name, or the DM peer. */
   const voiceLabel = () => {
     const id = activeVoice();
@@ -704,6 +1115,9 @@ function Home(props: { home: ServerSession }) {
     refreshContacts();
     refreshBlocks();
     refreshDms();
+    // Load the home profile so the pill shows your avatar/name and the login
+    // picker's cached avatar stays fresh (home is the active session at launch).
+    void refreshProfile();
     // Re-spawn any taverns this client hosts and attach them to the rail.
     attachResumedTaverns();
     api
@@ -744,6 +1158,7 @@ function Home(props: { home: ServerSession }) {
           id: m.id,
           groupId: m.groupId,
           author: m.senderDisplayName,
+          senderId: m.senderId,
           content: m.content,
           timestampMs: m.timestampMs,
         });
@@ -797,6 +1212,8 @@ function Home(props: { home: ServerSession }) {
           if (p.joined) list.push(p);
           return { ...prev, [p.groupId]: list };
         });
+        // Drive the WebRTC mesh: connect to joiners, drop leavers.
+        voice.onParticipant(p);
       })
     );
     unlisteners.push(
@@ -883,6 +1300,7 @@ function Home(props: { home: ServerSession }) {
         id: m.id,
         groupId: m.groupId,
         author: m.senderDisplayName,
+        senderId: m.senderId,
         content: m.content,
         timestampMs: m.timestampMs,
       }))
@@ -1473,16 +1891,14 @@ function Home(props: { home: ServerSession }) {
         icon: faPlus,
         onClick: () => {
           closeMenu();
-          setCreateChannelOpen(true);
+          // Context-menu channels land in the first category (or uncategorized).
+          openCreateChannel(categories()[0]?.id ?? "");
         },
       });
       items.push({
         label: "Create Category",
         icon: faPlus,
-        onClick: () => {
-          closeMenu();
-          notifyTransient({ severity: "info", message: "Categories are coming soon." }, 2500);
-        },
+        onClick: createCategoryFlow,
       });
     }
     items.push({
@@ -1509,6 +1925,31 @@ function Home(props: { home: ServerSession }) {
       items.push({ label: "Delete Tavern", danger: true, sep: true, onClick: deleteTavernFlow });
     }
     return items;
+  }
+
+  /** Right-click menu for a category header (gated by MANAGE_CHANNELS). */
+  function categoryMenuItems(cat: api.CategoryDto): MenuItem[] {
+    if (!can(api.PERM.MANAGE_CHANNELS)) return tavernMenuItems();
+    return [
+      {
+        label: "Create Channel",
+        icon: faPlus,
+        onClick: () => {
+          closeMenu();
+          openCreateChannel(cat.id);
+        },
+      },
+      { label: "Create Category", icon: faPlus, onClick: createCategoryFlow },
+      {
+        label: "Delete Category",
+        danger: true,
+        sep: true,
+        onClick: () => {
+          closeMenu();
+          deleteCategoryFlow(cat);
+        },
+      },
+    ];
   }
 
   /** Show the Direct Messages home (backed by the hidden home server). */
@@ -2019,23 +2460,7 @@ function Home(props: { home: ServerSession }) {
                   </p>
                 }
               >
-                {(m) => (
-                  <Show
-                    when={!m.pending}
-                    fallback={
-                      <div class="message pending" aria-busy="true">
-                        <div class="glint glint-author" />
-                        <div class="glint glint-body" />
-                      </div>
-                    }
-                  >
-                    <div class="message">
-                      <span class="author">{m.author}</span>
-                      <span class="time">{new Date(m.timestampMs).toLocaleTimeString()}</span>
-                      <div class="body">{m.content}</div>
-                    </div>
-                  </Show>
-                )}
+                {(m) => renderMsg(m)}
               </For>
               <div ref={bottomRef} />
             </div>
@@ -2203,102 +2628,112 @@ function Home(props: { home: ServerSession }) {
                 </>
               }
             >
-              {/* Optional wide banner atop the channel list. */}
-              <Show when={tavern()?.bannerUrl}>
-                <div class="tavern-banner">
-                  <img src={tavern()!.bannerUrl} alt="" />
-                </div>
-              </Show>
-              {/* Clickable tavern header → management menu (Discord-style). */}
-              <div class={`tavern-header-bar ${tavern()?.bannerUrl ? "with-banner" : ""}`}>
-                <button
-                  class="tavern-header"
-                  title="Tavern menu"
-                  onClick={(e) => showMenu(e, tavernMenuItems())}
-                >
-                  <Show when={tavern()?.iconUrl}>
-                    <img class="tavern-header-icon" src={tavern()!.iconUrl} alt="" />
-                  </Show>
-                  <span class="tavern-header-name">{tavern()?.name || "Tavern"}</span>
-                  <Fa icon={faChevronDown} />
-                </button>
-                <Show when={can(api.PERM.MANAGE_CHANNELS)}>
-                  <button
-                    class="channel-add-btn"
-                    title="Create channel"
-                    onClick={() => setCreateChannelOpen(true)}
-                  >
-                    <Fa icon={faPlus} />
-                  </button>
-                </Show>
-              </div>
-              <For each={textChannels()}>
-                {(g) => (
-                  <div class={`channel-row ${g.id === activeId() ? "active" : ""}`}>
-                    <button class="channel" onClick={() => setActiveId(g.id)}>
-                      <span class="hash">
-                        <Fa icon={faHashtag} />
-                      </span>
-                      {g.name}
-                    </button>
-                    <Show when={can(api.PERM.MANAGE_CHANNELS)}>
-                      <button
-                        class="channel-del"
-                        title="Delete channel"
-                        onClick={() => deleteChannel(g.id)}
-                      >
-                        <Fa icon={faTrash} />
-                      </button>
-                    </Show>
+              {/* Banner + clickable header. The header is overlaid on the bottom
+                  of the banner (gradient flush to the banner's bottom edge); with
+                  no banner it sits in normal flow. The + button is gone - channels
+                  are created from a category's + or the context menu. */}
+              <div class={`tavern-head ${tavern()?.bannerUrl ? "has-banner" : ""}`}>
+                <Show when={tavern()?.bannerUrl}>
+                  <div class="tavern-banner">
+                    <img src={tavern()!.bannerUrl} alt="" />
                   </div>
-                )}
-              </For>
+                </Show>
+                <div class="tavern-header-bar">
+                  <button
+                    class="tavern-header"
+                    title="Tavern menu"
+                    onClick={(e) => showMenu(e, tavernMenuItems())}
+                  >
+                    <Show when={tavern()?.iconUrl}>
+                      <img class="tavern-header-icon" src={tavern()!.iconUrl} alt="" />
+                    </Show>
+                    <span class="tavern-header-name">{tavern()?.name || "Tavern"}</span>
+                    <Fa icon={faChevronDown} />
+                  </button>
+                </div>
+              </div>
 
-              <Show when={voiceChannels().length > 0}>
-                <div class="sidebar-header">Voice channels</div>
-              </Show>
-              <For each={voiceChannels()}>
-                {(g) => (
-                  <>
-                    <div class={`channel-row ${activeVoice() === g.id ? "active" : ""}`}>
-                      <button
-                        class="channel voice-channel"
-                        onClick={() => joinVoiceChannel(g.id)}
-                      >
-                        <span class="hash">
-                          <Fa icon={faVolumeHigh} />
-                        </span>
-                        {g.name}
-                      </button>
+              {/* Uncategorized channels (rendered above the categories). */}
+              <For each={channelsIn("")}>{(g) => channelRow(g, "")}</For>
+
+              {/* Categories, each collapsible, with its channels + a create '+'. */}
+              <For each={categories()}>
+                {(cat) => (
+                  <div
+                    class={`category ${dragCatId() && dragCatId() !== cat.id && dragOverCat() === cat.id ? "drop-above" : ""}`}
+                    onDragOver={(e) => {
+                      if (dragCatId() && dragCatId() !== cat.id) {
+                        e.preventDefault();
+                        setDragOverCat(cat.id);
+                      }
+                    }}
+                    onDrop={(e) => {
+                      if (dragCatId()) {
+                        e.preventDefault();
+                        dropCategory(cat.id);
+                      }
+                    }}
+                  >
+                    <div
+                      class="category-header"
+                      draggable={can(api.PERM.MANAGE_CHANNELS)}
+                      onClick={() => toggleCategory(cat.id)}
+                      onContextMenu={(e) => {
+                        e.stopPropagation();
+                        showMenu(e, categoryMenuItems(cat));
+                      }}
+                      onDragStart={(e) => {
+                        setDragCatId(cat.id);
+                        if (e.dataTransfer) {
+                          e.dataTransfer.effectAllowed = "move";
+                          e.dataTransfer.setData("text/plain", cat.id);
+                        }
+                      }}
+                      onDragEnd={() => {
+                        setDragCatId(null);
+                        setDragOverCat(null);
+                      }}
+                    >
+                      <Fa
+                        icon={collapsedCats()[cat.id] ? faChevronRight : faChevronDown}
+                        class="category-caret"
+                      />
+                      <span class="category-name">{cat.name}</span>
                       <Show when={can(api.PERM.MANAGE_CHANNELS)}>
                         <button
-                          class="channel-del"
-                          title="Delete channel"
-                          onClick={() => deleteChannel(g.id)}
+                          class="cat-add"
+                          title="Create channel"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            openCreateChannel(cat.id);
+                          }}
                         >
-                          <Fa icon={faTrash} />
+                          <Fa icon={faPlus} />
                         </button>
                       </Show>
                     </div>
-                    <For each={participantsFor(g.id)}>
-                      {(p) => (
-                        <div class="voice-participant">
-                          <span class="vp-name">{p.userId.slice(0, 8)}</span>
-                          <span class="vp-icons">
-                            <Show when={p.muted}>
-                              <Fa icon={faMicrophoneSlash} />
-                            </Show>
-                            <Show when={p.cameraOn}>
-                              <Fa icon={faVideo} />
-                            </Show>
-                            <Show when={p.screenOn}>
-                              <Fa icon={faDesktop} />
-                            </Show>
-                          </span>
-                        </div>
-                      )}
-                    </For>
-                  </>
+                    <Show when={!collapsedCats()[cat.id]}>
+                      {/* The channel area is itself a drop zone so channels can be
+                          dropped into (the bottom of) this category, incl. empty. */}
+                      <div
+                        class="category-channels"
+                        onDragOver={(e) => {
+                          if (dragChannelId()) {
+                            e.preventDefault();
+                            setDragOverChannel(null);
+                          }
+                        }}
+                        onDrop={(e) => {
+                          if (dragChannelId()) {
+                            e.preventDefault();
+                            dropChannel(cat.id, null);
+                          }
+                        }}
+                      >
+                        <For each={channelsIn(cat.id)}>{(g) => channelRow(g, cat.id)}</For>
+                      </div>
+                    </Show>
+                  </div>
                 )}
               </For>
 
@@ -2312,7 +2747,10 @@ function Home(props: { home: ServerSession }) {
                   can(api.PERM.MANAGE_CHANNELS)
                 }
               >
-                <button class="invite-btn" onClick={() => setCreateChannelOpen(true)}>
+                <button
+                  class="invite-btn"
+                  onClick={() => openCreateChannel(categories()[0]?.id ?? "")}
+                >
                   <Fa icon={faPlus} />
                   Create a channel
                 </button>
@@ -2355,6 +2793,13 @@ function Home(props: { home: ServerSession }) {
                   <Fa icon={localVoice().muted ? faMicrophoneSlash : faMicrophone} />
                 </button>
                 <button
+                  class={`voice-toggle ${deafened() ? "off" : ""}`}
+                  title={deafened() ? "Undeafen" : "Deafen"}
+                  onClick={toggleDeafen}
+                >
+                  <Fa icon={deafened() ? faVolumeXmark : faHeadphones} />
+                </button>
+                <button
                   class={`voice-toggle ${localVoice().cameraOn ? "on" : ""}`}
                   title="Toggle camera"
                   onClick={toggleCamera}
@@ -2373,14 +2818,29 @@ function Home(props: { home: ServerSession }) {
           </Show>
 
           <div class="user-card">
-            <div class="user-avatar">{(props.home.username[0] ?? "?").toUpperCase()}</div>
+            <div class="user-avatar">
+              <Show
+                when={myProfile()?.avatarUrl}
+                fallback={(props.home.username[0] ?? "?").toUpperCase()}
+              >
+                <img src={myProfile()!.avatarUrl} alt="" />
+              </Show>
+            </div>
             <div class="user-info">
               <span class="user-name" title={props.home.username}>
-                {props.home.username}
+                {myProfile()?.displayName || props.home.username}
               </span>
               <span class="user-status">Online</span>
             </div>
-            <button class="user-gear" title="Settings" onClick={() => setSettingsOpen(true)}>
+            <button
+              class="user-gear"
+              title="Settings"
+              onClick={() => {
+                setSettingsTab("profile");
+                openProfileSettings();
+                setSettingsOpen(true);
+              }}
+            >
               <Fa icon={faGear} />
             </button>
           </div>
@@ -2413,25 +2873,7 @@ function Home(props: { home: ServerSession }) {
             </header>
 
             <div class="messages">
-              <For each={messages()}>
-                {(m) => (
-                  <Show
-                    when={!m.pending}
-                    fallback={
-                      <div class="message pending" aria-busy="true">
-                        <div class="glint glint-author" />
-                        <div class="glint glint-body" />
-                      </div>
-                    }
-                  >
-                    <div class="message">
-                      <span class="author">{m.author}</span>
-                      <span class="time">{new Date(m.timestampMs).toLocaleTimeString()}</span>
-                      <div class="body">{m.content}</div>
-                    </div>
-                  </Show>
-                )}
-              </For>
+              <For each={messages()}>{(m) => renderMsg(m)}</For>
               <div ref={bottomRef} />
             </div>
 
@@ -2470,7 +2912,12 @@ function Home(props: { home: ServerSession }) {
                           >
                             <span class={`member-dot ${m.online ? "online" : ""}`} />
                             <span class="member-avatar">
-                              {(m.displayName[0] ?? "?").toUpperCase()}
+                              <Show
+                                when={m.avatarUrl}
+                                fallback={(m.displayName[0] ?? "?").toUpperCase()}
+                              >
+                                <img src={m.avatarUrl} alt="" />
+                              </Show>
                             </span>
                             <span
                               class="member-name"
@@ -2515,13 +2962,45 @@ function Home(props: { home: ServerSession }) {
         </div>
       </Show>
 
-      <Show when={createChannelOpen()}>
-        <div class="modal-backdrop" onClick={() => setCreateChannelOpen(false)}>
-          <div class="modal" onClick={(e) => e.stopPropagation()}>
-            <h3>Create channel</h3>
+      {/* Create-channel side panel (Discord-style), scoped to a category. */}
+      <Show when={createChannelCat() !== null}>
+        <div class="modal-backdrop" onClick={() => setCreateChannelCat(null)}>
+          <div class="create-channel-panel" onClick={(e) => e.stopPropagation()}>
+            <button class="settings-close" title="Close" onClick={() => setCreateChannelCat(null)}>
+              <Fa icon={faXmark} />
+            </button>
+            <h3 class="ccp-title">Create Channel</h3>
+            <div class="ccp-sub">
+              in {categories().find((c) => c.id === createChannelCat())?.name ?? "this tavern"}
+            </div>
             <form onSubmit={submitCreateChannel}>
-              <div class="field">
-                <label class="field-label">Channel name</label>
+              <label class="field-label">Channel Type</label>
+              <button
+                type="button"
+                class={`ccp-type ${newChannelKind() === "text" ? "active" : ""}`}
+                onClick={() => setNewChannelKind("text")}
+              >
+                <Fa icon={faHashtag} />
+                <span class="ccp-type-text">
+                  <span class="ccp-type-name">Text</span>
+                  <span class="ccp-type-desc">Send messages, images, GIFs, emoji, and more</span>
+                </span>
+              </button>
+              <button
+                type="button"
+                class={`ccp-type ${newChannelKind() === "voice" ? "active" : ""}`}
+                onClick={() => setNewChannelKind("voice")}
+              >
+                <Fa icon={faVolumeHigh} />
+                <span class="ccp-type-text">
+                  <span class="ccp-type-name">Voice</span>
+                  <span class="ccp-type-desc">Hang out with voice, video, and screen share</span>
+                </span>
+              </button>
+
+              <label class="field-label ccp-name-label">Channel Name</label>
+              <div class="ccp-name-input">
+                <Fa icon={newChannelKind() === "voice" ? faVolumeHigh : faHashtag} />
                 <input
                   value={newChannelName()}
                   onInput={(e) => setNewChannelName(e.currentTarget.value)}
@@ -2529,31 +3008,13 @@ function Home(props: { home: ServerSession }) {
                   autofocus
                 />
               </div>
-              <div class="field">
-                <label class="field-label">Type</label>
-                <div class="channel-kind-pick">
-                  <button
-                    type="button"
-                    class={`btn-secondary ${newChannelKind() === "text" ? "active" : ""}`}
-                    onClick={() => setNewChannelKind("text")}
-                  >
-                    <Fa icon={faHashtag} /> Text
-                  </button>
-                  <button
-                    type="button"
-                    class={`btn-secondary ${newChannelKind() === "voice" ? "active" : ""}`}
-                    onClick={() => setNewChannelKind("voice")}
-                  >
-                    <Fa icon={faVolumeHigh} /> Voice
-                  </button>
-                </div>
-              </div>
+
               <div class="modal-footer">
-                <button type="button" class="btn-secondary" onClick={() => setCreateChannelOpen(false)}>
+                <button type="button" class="btn-secondary" onClick={() => setCreateChannelCat(null)}>
                   Cancel
                 </button>
                 <button type="submit" disabled={!newChannelName().trim()}>
-                  Create
+                  Create Channel
                 </button>
               </div>
             </form>
@@ -2839,7 +3300,12 @@ function Home(props: { home: ServerSession }) {
                     {(m) => (
                       <div class="settings-row">
                         <span class="member-avatar">
-                          {(m.displayName[0] ?? "?").toUpperCase()}
+                          <Show
+                            when={m.avatarUrl}
+                            fallback={(m.displayName[0] ?? "?").toUpperCase()}
+                          >
+                            <img src={m.avatarUrl} alt="" />
+                          </Show>
                         </span>
                         <span class="settings-row-main">
                           <span class="member-name">{m.displayName}</span>
@@ -3339,7 +3805,7 @@ function Home(props: { home: ServerSession }) {
       </Show>
 
       <Show when={settingsOpen()}>
-        <div class="modal-backdrop" onClick={() => setSettingsOpen(false)}>
+        <div class="modal-backdrop" onClick={() => { stopMicTest(); setSettingsOpen(false); }}>
           <div class="modal settings-modal" onClick={(e) => e.stopPropagation()}>
             <h3>Settings</h3>
 
@@ -3348,7 +3814,9 @@ function Home(props: { home: ServerSession }) {
                 <For
                   each={
                     [
+                      ["profile", "Profile"],
                       ["privacy", "Privacy"],
+                      ["voice", "Voice & Video"],
                       ["friends", "Friends"],
                       ["network", "Yggdrasil"],
                       ["nodes", "Nodes"],
@@ -3358,7 +3826,12 @@ function Home(props: { home: ServerSession }) {
                   {([key, label]) => (
                     <button
                       class={`settings-nav-item ${settingsTab() === key ? "active" : ""}`}
-                      onClick={() => setSettingsTab(key)}
+                      onClick={() => {
+                        if (key !== "voice") stopMicTest();
+                        setSettingsTab(key);
+                        if (key === "voice") loadAudioDevices();
+                        if (key === "profile") openProfileSettings();
+                      }}
                     >
                       {label}
                     </button>
@@ -3367,6 +3840,63 @@ function Home(props: { home: ServerSession }) {
               </nav>
 
               <div class="settings-content">
+                <Show when={settingsTab() === "profile"}>
+                  <form class="settings-section" onSubmit={saveProfile}>
+                    <h4>Profile</h4>
+                    <p class="field-help">
+                      This is your profile on <b>{tavern()?.name || "this server"}</b>. Each tavern
+                      has its own profile (name + avatar); your home account is your main one.
+                    </p>
+                    <div class="field">
+                      <label class="field-label">Avatar</label>
+                      <div class="role-icon-row">
+                        <span class="profile-avatar-preview">
+                          <Show
+                            when={profAvatar()}
+                            fallback={(profName()[0] ?? "?").toUpperCase()}
+                          >
+                            <img src={profAvatar()} alt="avatar" />
+                          </Show>
+                        </span>
+                        <label class="btn-secondary btn-sm file-btn">
+                          {profAvatar() ? "Change avatar" : "Choose image"}
+                          <input
+                            type="file"
+                            accept="image/*"
+                            onChange={(e) => {
+                              downscaleImage(e.currentTarget.files?.[0], 128, 128, setProfAvatar);
+                              e.currentTarget.value = "";
+                            }}
+                          />
+                        </label>
+                        <Show when={profAvatar()}>
+                          <button
+                            type="button"
+                            class="btn-secondary btn-sm btn-danger-text"
+                            onClick={() => setProfAvatar("")}
+                          >
+                            Remove
+                          </button>
+                        </Show>
+                      </div>
+                    </div>
+                    <div class="field">
+                      <label class="field-label">Display name</label>
+                      <input
+                        value={profName()}
+                        onInput={(e) => setProfName(e.currentTarget.value)}
+                        placeholder="Your name on this server"
+                      />
+                      <p class="field-help">
+                        Your username is <code>{myProfile()?.username || props.home.username}</code>.
+                      </p>
+                    </div>
+                    <div class="actions">
+                      <button type="submit">Save profile</button>
+                    </div>
+                  </form>
+                </Show>
+
                 <Show when={settingsTab() === "privacy"}>
                   <div class="settings-section">
                     <h4>Privacy</h4>
@@ -3382,6 +3912,149 @@ function Home(props: { home: ServerSession }) {
                       <p class="field-help">
                         Messages you receive are always encrypted on disk. This also encrypts the
                         messages you send, at a small cost to load speed.
+                      </p>
+                    </div>
+                  </div>
+                </Show>
+
+                <Show when={settingsTab() === "voice"}>
+                  <div class="settings-section">
+                    <h4>Voice &amp; Video</h4>
+                    <div class="field">
+                      <label class="field-label" for="mic-device">Microphone</label>
+                      <select
+                        id="mic-device"
+                        value={voicePrefs().micDeviceId}
+                        onChange={(e) => updateVoicePrefs({ micDeviceId: e.currentTarget.value })}
+                      >
+                        <option value="">System default</option>
+                        <For each={audioInputs()}>
+                          {(d) => (
+                            <option value={d.deviceId}>
+                              {d.label || `Microphone ${d.deviceId.slice(0, 6)}`}
+                            </option>
+                          )}
+                        </For>
+                      </select>
+                    </div>
+                    <div class="field">
+                      <label class="field-label" for="spk-device">Output device</label>
+                      <select
+                        id="spk-device"
+                        value={voicePrefs().speakerDeviceId}
+                        onChange={(e) => updateVoicePrefs({ speakerDeviceId: e.currentTarget.value })}
+                      >
+                        <option value="">System default</option>
+                        <For each={audioOutputs()}>
+                          {(d) => (
+                            <option value={d.deviceId}>
+                              {d.label || `Speaker ${d.deviceId.slice(0, 6)}`}
+                            </option>
+                          )}
+                        </For>
+                      </select>
+                      <p class="field-help">Device names appear after you've allowed mic access once.</p>
+                    </div>
+
+                    <div class="field">
+                      <label class="field-label">
+                        Microphone volume - {voicePrefs().micGain}%
+                      </label>
+                      <input
+                        type="range"
+                        min="0"
+                        max="200"
+                        value={voicePrefs().micGain}
+                        onInput={(e) =>
+                          updateVoicePrefs({ micGain: Number(e.currentTarget.value) })
+                        }
+                      />
+                    </div>
+                    <div class="field">
+                      <label class="field-label">
+                        Output volume - {voicePrefs().outputVolume}%
+                      </label>
+                      <input
+                        type="range"
+                        min="0"
+                        max="200"
+                        value={voicePrefs().outputVolume}
+                        onInput={(e) =>
+                          updateVoicePrefs({ outputVolume: Number(e.currentTarget.value) })
+                        }
+                      />
+                    </div>
+
+                    <div class="field">
+                      <label class="field-label">Mic test</label>
+                      <div class="mic-test-row">
+                        <button
+                          type="button"
+                          class={micTesting() ? "btn-danger" : ""}
+                          onClick={toggleMicTest}
+                        >
+                          {micTesting() ? "Stop test" : "Mic test"}
+                        </button>
+                        <div class="mic-test-meter">
+                          <div
+                            class="mic-test-fill"
+                            style={{ width: `${Math.round(micTestLevel() * 100)}%` }}
+                          />
+                        </div>
+                      </div>
+                      <p class="field-help">
+                        Routes your mic through a local WebRTC loopback and plays the result back,
+                        so you can confirm WebRTC carries your audio and tune the volume sliders
+                        live - all before joining a call. Use headphones to avoid echo.
+                      </p>
+                    </div>
+
+                    <h4>Input processing</h4>
+                    <div class="field">
+                      <label class="field-label" for="ns-mode">Noise suppression</label>
+                      <select
+                        id="ns-mode"
+                        value={voicePrefs().noiseSuppression}
+                        onChange={(e) =>
+                          updateVoicePrefs({
+                            noiseSuppression: e.currentTarget
+                              .value as voicePrefsMod.NoiseSuppression,
+                          })
+                        }
+                      >
+                        <option value="none">None</option>
+                        <option value="standard">Standard (built-in)</option>
+                        <option value="rnnoise">RNNoise (recommended)</option>
+                      </select>
+                      <p class="field-help">
+                        Reduces background noise from your mic. "Standard" uses the built-in WebRTC
+                        suppression; "RNNoise" is a stronger AI model (the free, open-source
+                        equivalent of Discord's Krisp) that runs locally.
+                      </p>
+                    </div>
+                    <div class="field">
+                      <label class="check">
+                        <input
+                          type="checkbox"
+                          checked={voicePrefs().echoCancellation}
+                          onChange={(e) =>
+                            updateVoicePrefs({ echoCancellation: e.currentTarget.checked })
+                          }
+                        />
+                        Echo cancellation
+                      </label>
+                    </div>
+                    <div class="field">
+                      <label class="check">
+                        <input
+                          type="checkbox"
+                          checked={voicePrefs().autoGain}
+                          onChange={(e) => updateVoicePrefs({ autoGain: e.currentTarget.checked })}
+                        />
+                        Automatic gain control
+                      </label>
+                      <p class="field-help">
+                        Changes apply immediately if you're in a call, otherwise on your next join.
                       </p>
                     </div>
                   </div>
@@ -3640,7 +4313,7 @@ function Home(props: { home: ServerSession }) {
             </div>
 
             <div class="modal-footer">
-              <button class="btn-secondary" onClick={() => setSettingsOpen(false)}>
+              <button class="btn-secondary" onClick={() => { stopMicTest(); setSettingsOpen(false); }}>
                 Close
               </button>
             </div>

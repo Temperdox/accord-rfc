@@ -58,6 +58,15 @@ yggdrasil = { git = "https://github.com/Revertron/Yggdrasil-ng", rev = "69164844
 ed25519-dalek = { workspace = true, optional = true }
 rand = { workspace = true, optional = true }
 
+# --- Per-webview media-permission auto-grant (Discord-style; see webview_perms.rs).
+# Versions are pinned to match wry 0.55 / Tauri 2.11 so PlatformWebview's native
+# handles line up with these crates' types.
+[target.'cfg(windows)'.dependencies]
+webview2-com = "=0.38.2"
+
+[target.'cfg(target_os = "linux")'.dependencies]
+webkit2gtk = "=2.0.2"
+
 [features]
 default = []
 # Compile in the embedded Yggdrasil mesh networking mode.

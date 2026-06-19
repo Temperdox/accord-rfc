@@ -81,14 +81,12 @@ pub fn open_logs(app: &AppHandle) -> Result<String, String> {
 }
 
 /// Dev command: reveal the logs folder so logs can be downloaded/shared.
-#[cfg(debug_assertions)]
 #[tauri::command]
 pub fn dev_open_logs(app: AppHandle) -> Result<String, String> {
     open_logs(&app)
 }
 
 /// Dev command: return the logs directory path (for display in the dev panel).
-#[cfg(debug_assertions)]
 #[tauri::command]
 pub fn dev_log_dir(app: AppHandle) -> Result<String, String> {
     log_dir(&app)

@@ -108,6 +108,7 @@ async fn main() -> anyhow::Result<()> {
                 name: "general".into(),
                 description: "chat".into(),
                 channel_kind: "text".into(),
+                category_id: String::new(),
             }),
             &owner_tok,
         ))
@@ -118,6 +119,7 @@ async fn main() -> anyhow::Result<()> {
                 name: "Lounge".into(),
                 description: String::new(),
                 channel_kind: "voice".into(),
+                category_id: String::new(),
             }),
             &owner_tok,
         ))
@@ -213,6 +215,7 @@ async fn main() -> anyhow::Result<()> {
                     name: format!("temp-{i}"),
                     description: String::new(),
                     channel_kind: "text".into(),
+                    category_id: String::new(),
                 }),
                 &bob_tok,
             ))

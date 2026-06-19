@@ -389,6 +389,8 @@ async fn find_existing_dm(
                 kind: "private".into(),
                 channel_kind: "text".into(),
                 member_count: 2,
+                category_id: String::new(),
+                position: 0,
             });
         }
     }
@@ -526,6 +528,8 @@ async fn create_dm_with(
         kind: "private".into(),
         channel_kind: "text".into(),
         member_count: 2,
+        category_id: String::new(),
+        position: 0,
     })
 }
 

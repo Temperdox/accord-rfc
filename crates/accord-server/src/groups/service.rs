@@ -13,13 +13,16 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use accord_proto::group_service_server::GroupService;
 use accord_proto::{
     AddMembersRequest, AddMembersResponse, AuditEntry, BanInfo, BanMemberRequest, BanMemberResponse,
-    ChatKind, CreateGroupResponse, CreatePrivateGroupRequest, CreatePublicGroupRequest,
-    DeleteGroupRequest, DeleteGroupResponse, GetGroupInfoRequest, GetGroupInfoResponse,
-    GetTavernRequest, GroupId, GroupSummary, KickMemberRequest, KickMemberResponse,
-    ListAuditRequest, ListAuditResponse, ListBansRequest, ListBansResponse, ListGroupsRequest,
-    ListGroupsResponse, ListMembersRequest, ListMembersResponse, MemberInfo, ModAlert,
-    RemoveMembersRequest, RemoveMembersResponse, Severity, TavernInfo, UnbanMemberRequest,
-    UnbanMemberResponse, UpdateTavernRequest, UserId,
+    Category, ChatKind, CreateCategoryRequest, CreateGroupResponse, CreatePrivateGroupRequest,
+    CreatePublicGroupRequest, DeleteCategoryRequest, DeleteCategoryResponse, DeleteGroupRequest,
+    DeleteGroupResponse, GetGroupInfoRequest, GetGroupInfoResponse, GetTavernRequest, GroupId,
+    GroupSummary, KickMemberRequest, KickMemberResponse, ListAuditRequest, ListAuditResponse,
+    ListBansRequest, ListBansResponse, ListCategoriesRequest, ListCategoriesResponse,
+    GetMyProfileRequest, ListGroupsRequest, ListGroupsResponse, ListMembersRequest,
+    ListMembersResponse, MemberInfo, ModAlert, ProfileResponse, ReorderCategoriesRequest,
+    ReorderCategoriesResponse, ReorderChannelsRequest, ReorderChannelsResponse, RemoveMembersRequest,
+    RemoveMembersResponse, Severity, TavernInfo, UnbanMemberRequest, UnbanMemberResponse,
+    UpdateProfileRequest, UpdateTavernRequest, UserId,
 };
 use accord_types::perms::Permissions;
 use tonic::{Request, Response, Status};
@@ -189,7 +192,12 @@ impl GroupService for GroupSvc {
 
         let group_id = self
             .store
-            .create_public_group(name, req.description.trim(), channel_kind)
+            .create_public_group(
+                name,
+                req.description.trim(),
+                channel_kind,
+                req.category_id.trim(),
+            )
             .await?;
         // The creator owns the channel.
         self.store.add_member(group_id, user_id, "owner").await?;
@@ -431,6 +439,7 @@ impl GroupService for GroupSvc {
                 is_owner: m.is_owner,
                 online,
                 role_ids,
+                avatar_url: m.avatar_url,
             });
         }
         Ok(Response::new(ListMembersResponse { members }))
@@ -607,9 +616,148 @@ impl GroupService for GroupSvc {
             .collect();
         Ok(Response::new(ListAuditResponse { entries }))
     }
+
+    async fn list_categories(
+        &self,
+        request: Request<ListCategoriesRequest>,
+    ) -> Result<Response<ListCategoriesResponse>, Status> {
+        // Any member can read the category layout.
+        let _ = authenticate(&request, &self.jwt)?;
+        let categories = self
+            .store
+            .list_categories()
+            .await?
+            .into_iter()
+            .map(category_to_proto)
+            .collect();
+        Ok(Response::new(ListCategoriesResponse { categories }))
+    }
+
+    async fn create_category(
+        &self,
+        request: Request<CreateCategoryRequest>,
+    ) -> Result<Response<Category>, Status> {
+        let claims = authenticate(&request, &self.jwt)?;
+        let caller = parse_uuid(&claims.sub)?;
+        authz::require(self.store.as_ref(), caller, Permissions::MANAGE_CHANNELS).await?;
+        let req = request.into_inner();
+        let name = req.name.trim();
+        if name.is_empty() {
+            return Err(ServerError::InvalidArgument("category name is required".into()).into());
+        }
+        self.guard(caller, ActionClass::CreateChannel, name, Some(name), &[])
+            .await?;
+        let id = self.store.create_category(name).await?;
+        let cat = self
+            .store
+            .list_categories()
+            .await?
+            .into_iter()
+            .find(|c| c.id == id)
+            .ok_or(ServerError::NotFound("category".into()))?;
+        Ok(Response::new(category_to_proto(cat)))
+    }
+
+    async fn delete_category(
+        &self,
+        request: Request<DeleteCategoryRequest>,
+    ) -> Result<Response<DeleteCategoryResponse>, Status> {
+        let claims = authenticate(&request, &self.jwt)?;
+        let caller = parse_uuid(&claims.sub)?;
+        authz::require(self.store.as_ref(), caller, Permissions::MANAGE_CHANNELS).await?;
+        let id = parse_uuid(&request.into_inner().id)?;
+        self.guard(caller, ActionClass::DeleteChannel, &id.to_string(), None, &[])
+            .await?;
+        self.store.delete_category(id).await?;
+        Ok(Response::new(DeleteCategoryResponse {}))
+    }
+
+    async fn reorder_categories(
+        &self,
+        request: Request<ReorderCategoriesRequest>,
+    ) -> Result<Response<ReorderCategoriesResponse>, Status> {
+        let claims = authenticate(&request, &self.jwt)?;
+        let caller = parse_uuid(&claims.sub)?;
+        authz::require(self.store.as_ref(), caller, Permissions::MANAGE_CHANNELS).await?;
+        let ids: Vec<Uuid> = request
+            .into_inner()
+            .category_ids
+            .iter()
+            .map(|s| parse_uuid(s))
+            .collect::<Result<_, _>>()?;
+        self.store.reorder_categories(&ids).await?;
+        Ok(Response::new(ReorderCategoriesResponse {}))
+    }
+
+    async fn reorder_channels(
+        &self,
+        request: Request<ReorderChannelsRequest>,
+    ) -> Result<Response<ReorderChannelsResponse>, Status> {
+        let claims = authenticate(&request, &self.jwt)?;
+        let caller = parse_uuid(&claims.sub)?;
+        authz::require(self.store.as_ref(), caller, Permissions::MANAGE_CHANNELS).await?;
+        let req = request.into_inner();
+        let ids: Vec<Uuid> = req
+            .group_ids
+            .iter()
+            .map(|s| parse_uuid(s))
+            .collect::<Result<_, _>>()?;
+        self.store.reorder_channels(req.category_id.trim(), &ids).await?;
+        Ok(Response::new(ReorderChannelsResponse {}))
+    }
+
+    async fn get_my_profile(
+        &self,
+        request: Request<GetMyProfileRequest>,
+    ) -> Result<Response<ProfileResponse>, Status> {
+        let claims = authenticate(&request, &self.jwt)?;
+        let caller = parse_uuid(&claims.sub)?;
+        let (username, display_name, avatar_url) = self
+            .store
+            .user_profile(caller)
+            .await?
+            .ok_or(ServerError::NotFound("profile".into()))?;
+        Ok(Response::new(ProfileResponse {
+            username,
+            display_name,
+            avatar_url,
+        }))
+    }
+
+    async fn update_profile(
+        &self,
+        request: Request<UpdateProfileRequest>,
+    ) -> Result<Response<ProfileResponse>, Status> {
+        let claims = authenticate(&request, &self.jwt)?;
+        let caller = parse_uuid(&claims.sub)?;
+        let req = request.into_inner();
+        let name = req.display_name.trim();
+        if name.is_empty() {
+            return Err(ServerError::InvalidArgument("display name is required".into()).into());
+        }
+        self.store.update_profile(caller, name, req.avatar_url.trim()).await?;
+        let (username, display_name, avatar_url) = self
+            .store
+            .user_profile(caller)
+            .await?
+            .ok_or(ServerError::NotFound("profile".into()))?;
+        Ok(Response::new(ProfileResponse {
+            username,
+            display_name,
+            avatar_url,
+        }))
+    }
 }
 
 // --- helpers ----------------------------------------------------------------
+
+fn category_to_proto(c: crate::store::model::CategoryRow) -> Category {
+    Category {
+        id: c.id.to_string(),
+        name: c.name,
+        position: c.position,
+    }
+}
 
 fn summary_to_proto(row: GroupSummaryRow) -> GroupSummary {
     let kind = match row.kind.as_str() {
@@ -625,6 +773,8 @@ fn summary_to_proto(row: GroupSummaryRow) -> GroupSummary {
         kind: kind as i32,
         member_count: row.member_count.max(0) as u32,
         channel_kind: row.channel_kind,
+        category_id: row.category_id,
+        position: row.position,
     }
 }
 

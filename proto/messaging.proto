@@ -187,6 +187,9 @@ message VoiceParticipant {
   bool muted = 5;
   bool camera_on = 6;
   bool screen_on = 7;
+  // The participant's profile (for the UI to show a name + avatar, not an id).
+  string username = 8;
+  string display_name = 9;
 }
 
 // ---- Moderation alerts -----------------------------------------------------

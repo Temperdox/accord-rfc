@@ -17,11 +17,13 @@ use accord_proto::role_service_client::RoleServiceClient;
 use accord_proto::server_message::Payload as ServerPayload;
 use accord_proto::{
     AssignRoleRequest, BanMemberRequest, ClientMessage, CreatePublicGroupRequest,
-    CreateRoleRequest, DeleteGroupRequest, DeleteRoleRequest, FetchHistoryRequest,
-    GetMyPermissionsRequest, GetTavernRequest, GroupId, KickMemberRequest, ListAuditRequest,
-    ListBansRequest, ListGroupsRequest, ListMembersRequest, ListRolesRequest, MessageId,
-    RefreshTokenRequest, ReorderRolesRequest, SendPrivateMessage, SendPublicMessage,
-    UnassignRoleRequest, UnbanMemberRequest, UpdateRoleRequest, UpdateTavernRequest, UserId,
+    CreateCategoryRequest, CreateRoleRequest, DeleteCategoryRequest, DeleteGroupRequest,
+    DeleteRoleRequest, FetchHistoryRequest, GetMyPermissionsRequest, GetMyProfileRequest,
+    GetTavernRequest, GroupId, KickMemberRequest, ListAuditRequest, ListBansRequest,
+    ListCategoriesRequest, ListGroupsRequest, ListMembersRequest, ListRolesRequest, MessageId,
+    RefreshTokenRequest, ReorderCategoriesRequest, ReorderChannelsRequest, ReorderRolesRequest,
+    SendPrivateMessage, SendPublicMessage, UnassignRoleRequest, UnbanMemberRequest,
+    UpdateProfileRequest, UpdateRoleRequest, UpdateTavernRequest, UserId,
 };
 use tauri::{AppHandle, Emitter, Manager, State};
 use tokio::sync::{mpsc, oneshot};
@@ -30,9 +32,9 @@ use tonic::transport::Channel;
 use tonic::{Code, Request};
 
 use crate::commands::dto::{
-    AuditDto, BanDto, ConnectionStatus, DecryptedHistory, GroupDto, HistoryEntry, JoinedGroup,
-    MemberDto, MessageDto, ModAlertDto, MyPermsDto, PrivateMessageDto, RoleDto, TavernDto,
-    VoiceParticipantDto, VoiceSignalDto,
+    AuditDto, BanDto, CategoryDto, ConnectionStatus, DecryptedHistory, GroupDto, HistoryEntry,
+    JoinedGroup, MemberDto, MessageDto, ModAlertDto, MyPermsDto, PrivateMessageDto, ProfileDto,
+    RoleDto, TavernDto, VoiceParticipantDto, VoiceSignalDto,
 };
 use crate::grpc::{authed, require_session, status_to_string};
 use crate::state::{SharedEngine, SharedSessions};
@@ -367,6 +369,8 @@ async fn handle_server_message(
                 muted: p.muted,
                 camera_on: p.camera_on,
                 screen_on: p.screen_on,
+                username: p.username,
+                display_name: p.display_name,
             };
             if app.emit(VOICE_PARTICIPANT, dto).is_err() {
                 return Break(());
@@ -463,6 +467,7 @@ pub async fn create_channel(
     name: String,
     description: Option<String>,
     channel_kind: Option<String>,
+    category_id: Option<String>,
 ) -> Result<GroupDto, String> {
     let (channel, token) = require_session(&state).await?;
     let mut client = GroupServiceClient::new(channel);
@@ -472,6 +477,7 @@ pub async fn create_channel(
                 name,
                 description: description.unwrap_or_default(),
                 channel_kind: channel_kind.unwrap_or_else(|| "text".into()),
+                category_id: category_id.unwrap_or_default(),
             }),
             &token,
         )?)
@@ -486,7 +492,92 @@ pub async fn create_channel(
         kind: "public".into(),
         channel_kind: "text".into(),
         member_count: 1,
+        category_id: String::new(),
+        position: 0,
     })
+}
+
+/// List the tavern's channel categories (ordered).
+#[tauri::command]
+pub async fn list_categories(state: State<'_, SharedSessions>) -> Result<Vec<CategoryDto>, String> {
+    let (channel, token) = require_session(&state).await?;
+    let resp = GroupServiceClient::new(channel)
+        .list_categories(authed(Request::new(ListCategoriesRequest {}), &token)?)
+        .await
+        .map_err(status_to_string)?
+        .into_inner();
+    Ok(resp
+        .categories
+        .into_iter()
+        .map(|c| CategoryDto {
+            id: c.id,
+            name: c.name,
+            position: c.position,
+        })
+        .collect())
+}
+
+/// Create a channel category (gated by MANAGE_CHANNELS). Lands at the bottom.
+#[tauri::command]
+pub async fn create_category(
+    state: State<'_, SharedSessions>,
+    name: String,
+) -> Result<CategoryDto, String> {
+    let (channel, token) = require_session(&state).await?;
+    let c = GroupServiceClient::new(channel)
+        .create_category(authed(Request::new(CreateCategoryRequest { name }), &token)?)
+        .await
+        .map_err(status_to_string)?
+        .into_inner();
+    Ok(CategoryDto {
+        id: c.id,
+        name: c.name,
+        position: c.position,
+    })
+}
+
+/// Delete a category; its channels become uncategorized (gated MANAGE_CHANNELS).
+#[tauri::command]
+pub async fn delete_category(state: State<'_, SharedSessions>, id: String) -> Result<(), String> {
+    let (channel, token) = require_session(&state).await?;
+    GroupServiceClient::new(channel)
+        .delete_category(authed(Request::new(DeleteCategoryRequest { id }), &token)?)
+        .await
+        .map_err(status_to_string)?;
+    Ok(())
+}
+
+/// Reorder categories top-to-bottom (gated MANAGE_CHANNELS).
+#[tauri::command]
+pub async fn reorder_categories(
+    state: State<'_, SharedSessions>,
+    category_ids: Vec<String>,
+) -> Result<(), String> {
+    let (channel, token) = require_session(&state).await?;
+    GroupServiceClient::new(channel)
+        .reorder_categories(authed(Request::new(ReorderCategoriesRequest { category_ids }), &token)?)
+        .await
+        .map_err(status_to_string)?;
+    Ok(())
+}
+
+/// Move + reorder channels: every id in `group_ids` is placed in `category_id`
+/// with position = its index (gated MANAGE_CHANNELS).
+#[tauri::command]
+pub async fn reorder_channels(
+    state: State<'_, SharedSessions>,
+    category_id: String,
+    group_ids: Vec<String>,
+) -> Result<(), String> {
+    let (channel, token) = require_session(&state).await?;
+    GroupServiceClient::new(channel)
+        .reorder_channels(authed(
+            Request::new(ReorderChannelsRequest { category_id, group_ids }),
+            &token,
+        )?)
+        .await
+        .map_err(status_to_string)?;
+    Ok(())
 }
 
 /// Delete a public channel (gated by MANAGE_CHANNELS + guardrails).
@@ -532,8 +623,48 @@ pub async fn list_members(
             is_owner: m.is_owner,
             online: m.online,
             role_ids: m.role_ids,
+            avatar_url: m.avatar_url,
         })
         .collect())
+}
+
+/// Fetch the caller's own editable profile on the active server.
+#[tauri::command]
+pub async fn get_my_profile(state: State<'_, SharedSessions>) -> Result<ProfileDto, String> {
+    let (channel, token) = require_session(&state).await?;
+    let p = GroupServiceClient::new(channel)
+        .get_my_profile(authed(Request::new(GetMyProfileRequest {}), &token)?)
+        .await
+        .map_err(status_to_string)?
+        .into_inner();
+    Ok(ProfileDto {
+        username: p.username,
+        display_name: p.display_name,
+        avatar_url: p.avatar_url,
+    })
+}
+
+/// Update the caller's profile (display name + base64 avatar) on this server.
+#[tauri::command]
+pub async fn update_profile(
+    state: State<'_, SharedSessions>,
+    display_name: String,
+    avatar_url: String,
+) -> Result<ProfileDto, String> {
+    let (channel, token) = require_session(&state).await?;
+    let p = GroupServiceClient::new(channel)
+        .update_profile(authed(
+            Request::new(UpdateProfileRequest { display_name, avatar_url }),
+            &token,
+        )?)
+        .await
+        .map_err(status_to_string)?
+        .into_inner();
+    Ok(ProfileDto {
+        username: p.username,
+        display_name: p.display_name,
+        avatar_url: p.avatar_url,
+    })
 }
 
 /// The caller's effective permissions on the active server (UI gating).
@@ -549,6 +680,17 @@ pub async fn get_my_permissions(state: State<'_, SharedSessions>) -> Result<MyPe
         permissions: resp.permissions,
         is_owner: resp.is_owner,
     })
+}
+
+/// This device's id on the active server (for addressing relayed voice signaling
+/// and picking a deterministic WebRTC offerer).
+#[tauri::command]
+pub async fn get_my_device_id(state: State<'_, SharedSessions>) -> Result<String, String> {
+    let sessions = state.lock().await;
+    Ok(sessions
+        .active()
+        .and_then(|s| s.device_id.clone())
+        .unwrap_or_default())
 }
 
 // --- Roles management (RoleService) -----------------------------------------

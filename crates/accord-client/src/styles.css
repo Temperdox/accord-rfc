@@ -75,6 +75,33 @@ input:focus {
   outline: none;
   border-color: var(--accent);
 }
+/* Dark-themed dropdowns (the native control + its option list). */
+select {
+  width: 100%;
+  margin-top: 4px;
+  padding: 9px 10px;
+  background: var(--bg-input);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  color: var(--text);
+  font-size: 14px;
+  cursor: pointer;
+  appearance: none;
+  -webkit-appearance: none;
+  /* Custom chevron so the native one (which can't be themed) is hidden. */
+  background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%239a9aa8' stroke-width='3' stroke-linecap='round' stroke-linejoin='round'><polyline points='6 9 12 15 18 9'/></svg>");
+  background-repeat: no-repeat;
+  background-position: right 10px center;
+  padding-right: 28px;
+}
+select:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+select option {
+  background: var(--bg-input);
+  color: var(--text);
+}
 .row {
   display: flex;
   gap: 10px;
@@ -412,6 +439,7 @@ textarea:focus {
 
 /* ---- User card (bottom of sidebar) ---- */
 .user-card {
+  position: relative;
   display: flex;
   align-items: center;
   gap: 8px;
@@ -421,7 +449,23 @@ textarea:focus {
   background: var(--bg-input);
   border: 1px solid transparent;
   border-radius: var(--radius-lg);
+  overflow: hidden;
   transition: background 0.12s ease, border-color 0.12s ease;
+}
+/* Live mic-level "speaking" bar across the bottom of the pill. */
+.user-voice-bar {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  height: 3px;
+  background: rgba(255, 255, 255, 0.06);
+}
+.user-voice-level {
+  height: 100%;
+  background: var(--ok);
+  border-radius: 0 2px 2px 0;
+  transition: width 0.06s linear;
 }
 .user-card:hover {
   background: #15161b;
@@ -465,6 +509,11 @@ textarea:focus {
   flex: 0 0 auto;
   width: 30px;
   height: 30px;
+  /* Reset base button padding + center the icon in the circle. */
+  padding: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
   border-radius: 50%;
   background: var(--danger);
   border: none;
@@ -734,6 +783,12 @@ textarea:focus {
   align-items: center;
   justify-content: center;
   flex-shrink: 0;
+  overflow: hidden;
+}
+.pill-avatar img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
 }
 .pill-name {
   flex: 1;
@@ -863,12 +918,44 @@ button.link:hover:not(:disabled) {
     background-position: 0 50%;
   }
 }
+/* Discord-style message row: avatar gutter + name/time header + body. */
 .message {
+  display: flex;
+  gap: 12px;
   margin-bottom: 14px;
+  align-items: flex-start;
+}
+.msg-avatar {
+  flex: 0 0 auto;
+  width: 38px;
+  height: 38px;
+  border-radius: 50%;
+  background: var(--accent-dim);
+  color: #fff;
+  font-weight: 700;
+  font-size: 15px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+  margin-top: 2px;
+}
+.msg-avatar img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+.msg-main {
+  flex: 1;
+  min-width: 0;
+}
+.msg-head {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
 }
 .author {
   font-weight: 600;
-  margin-right: 8px;
 }
 .time {
   font-size: 11px;
@@ -878,6 +965,44 @@ button.link:hover:not(:disabled) {
   margin-top: 2px;
   white-space: pre-wrap;
   word-break: break-word;
+}
+/* Skeleton avatar while a history message decrypts. */
+.message.pending .msg-avatar.glint {
+  border-radius: 50%;
+}
+/* Real avatar images fill their circular containers. */
+.user-avatar img,
+.member-avatar img,
+.vp-avatar img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  border-radius: 50%;
+}
+.user-avatar,
+.member-avatar,
+.vp-avatar {
+  overflow: hidden;
+}
+/* Settings > Profile avatar preview. */
+.profile-avatar-preview {
+  width: 72px;
+  height: 72px;
+  flex: 0 0 auto;
+  border-radius: 50%;
+  background: var(--accent-dim);
+  color: #fff;
+  font-weight: 700;
+  font-size: 26px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+}
+.profile-avatar-preview img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
 }
 /* The composer is one rounded, taller box: attach (paperclip) + input + an
    animated actions cluster (3 ascending bars that, on hover, morph into an
@@ -1076,17 +1201,55 @@ button.link:hover:not(:disabled) {
 
 /* Voice participant tiles nested under a voice channel. */
 .voice-participant {
+  position: relative;
   display: flex;
   align-items: center;
-  justify-content: space-between;
-  padding: 2px 8px 2px 30px;
+  gap: var(--space-2);
+  padding: 3px 8px 4px 26px;
   font-size: var(--fs-sm);
   color: var(--text-dim);
+}
+/* Per-participant speaking bar (only rendered while we're in the same VC). */
+.vp-voice-bar {
+  position: absolute;
+  left: 26px;
+  right: 8px;
+  bottom: 0;
+  height: 2px;
+  background: rgba(255, 255, 255, 0.05);
+  border-radius: 1px;
+}
+.vp-voice-level {
+  height: 100%;
+  background: var(--ok);
+  border-radius: 1px;
+  transition: width 0.06s linear;
+}
+.vp-avatar {
+  flex: 0 0 auto;
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  background: var(--accent-dim);
+  color: #fff;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 10px;
+  font-weight: 700;
+}
+.vp-name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 .vp-icons {
   display: inline-flex;
   gap: 6px;
   color: var(--text-dim);
+  flex: 0 0 auto;
 }
 
 /* The persistent voice control bar (when connected to a voice channel). */
@@ -1108,6 +1271,9 @@ button.link:hover:not(:disabled) {
 }
 .voice-toggle {
   flex: 1;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
   background: var(--bg-input);
   border: 1px solid var(--border);
   color: var(--text);
@@ -1430,12 +1596,25 @@ button.link:hover:not(:disabled) {
 }
 
 /* Clickable tavern header (opens the management menu). */
+/* Banner + title group. Negative margins cancel the .sidebar-scroll 8px padding
+   so the banner is edge-to-edge and flush to the top. */
+.tavern-head {
+  position: relative;
+  margin: -8px -8px var(--space-1);
+}
+/* Full-width title bar. Its background is a bottom-up black gradient so white
+   text stays legible over any banner. With a banner it's absolutely overlaid on
+   the banner's bottom edge (gradient flush to the bottom). */
 .tavern-header-bar {
   display: flex;
-  align-items: center;
-  gap: 2px;
+  align-items: stretch;
   padding: 0;
-  margin-bottom: var(--space-1);
+}
+.tavern-head.has-banner .tavern-header-bar {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
 }
 .tavern-header {
   flex: 1;
@@ -1443,28 +1622,31 @@ button.link:hover:not(:disabled) {
   align-items: center;
   justify-content: space-between;
   gap: var(--space-2);
-  width: auto;
-  background: transparent;
+  width: 100%;
   border: none;
-  color: var(--text);
+  border-radius: 0;
   cursor: pointer;
+  color: #fff;
   font-weight: 700;
   font-size: var(--fs-base);
-  /* match .channel's box so the hover/active highlight lines up with channels */
-  padding: 8px 10px;
-  border-radius: var(--radius-sm);
+  padding: 12px 12px 8px;
+  background: linear-gradient(to top, rgba(0, 0, 0, 0.85), rgba(0, 0, 0, 0));
 }
+/* Hover = a gaussian blur of what's behind (the banner), not a solid fill. */
 .tavern-header:hover {
-  background: var(--bg-alt);
+  background: linear-gradient(to top, rgba(0, 0, 0, 0.5), rgba(0, 0, 0, 0.12));
+  backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
 }
 .tavern-header-name {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.6);
 }
 .tavern-header svg {
   font-size: var(--fs-xs);
-  color: var(--text-dim);
+  color: rgba(255, 255, 255, 0.75);
 }
 .contact-row-click {
   display: flex;
@@ -2362,6 +2544,8 @@ input.switch:disabled {
   flex: 0 0 auto;
   margin-right: 8px;
 }
+/* Banner fills the .tavern-head wrapper (which already breaks out of the
+   sidebar padding), so it's edge-to-edge with the title overlaid at its bottom. */
 .tavern-banner {
   width: 100%;
   aspect-ratio: 640 / 240;
@@ -2373,14 +2557,6 @@ input.switch:disabled {
   height: 100%;
   object-fit: cover;
   display: block;
-}
-/* When a banner is present, let the header overlap it slightly for depth. */
-.tavern-header-bar.with-banner {
-  margin-top: -10px;
-  border-top-left-radius: var(--radius-md);
-  border-top-right-radius: var(--radius-md);
-  background: var(--bg);
-  position: relative;
 }
 /* Settings: icon + banner previews. */
 .tavern-icon-preview {
@@ -2441,4 +2617,226 @@ input.switch:disabled {
   letter-spacing: 0.04em;
   color: var(--text-dim);
   padding: var(--space-2) var(--space-3) 4px;
+}
+
+/* ---- Channel categories ---- */
+.category {
+  position: relative;
+}
+.category-header {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 14px 8px 4px;
+  cursor: pointer;
+  user-select: none;
+}
+.category-header:hover .category-name {
+  color: var(--text);
+}
+.category-caret {
+  font-size: 9px;
+  color: var(--text-dim);
+  flex: 0 0 auto;
+}
+.category-name {
+  flex: 1;
+  min-width: 0;
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--text-dim);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.cat-add {
+  flex: 0 0 auto;
+  width: 18px;
+  height: 18px;
+  padding: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: transparent;
+  border: none;
+  border-radius: var(--radius-sm);
+  color: var(--text-dim);
+  font-size: 12px;
+  opacity: 0;
+}
+.category-header:hover .cat-add {
+  opacity: 1;
+}
+.cat-add:hover {
+  background: var(--bg-alt);
+  color: var(--text);
+}
+.category-channels {
+  min-height: 4px;
+}
+/* Drop indicators (reuse the role-list accent line). */
+.channel-row {
+  position: relative;
+}
+.channel-row.dragging {
+  opacity: 0.4;
+}
+.channel-row.drop-above::before,
+.category.drop-above::before {
+  content: "";
+  position: absolute;
+  left: 6px;
+  right: 6px;
+  top: -1px;
+  height: 2px;
+  border-radius: 2px;
+  background: var(--accent);
+}
+.category-header[draggable="true"] {
+  cursor: grab;
+}
+
+/* ---- Create-channel side panel (Discord-style) ---- */
+.create-channel-panel {
+  position: fixed;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  width: 460px;
+  max-width: 92vw;
+  background: var(--bg-alt);
+  border-left: 1px solid var(--border);
+  box-shadow: -16px 0 48px rgba(0, 0, 0, 0.45);
+  padding: var(--space-5);
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+}
+.create-channel-panel .settings-close {
+  position: absolute;
+  top: var(--space-4);
+  right: var(--space-4);
+}
+.ccp-title {
+  margin: 0;
+  font-size: var(--fs-lg);
+}
+.ccp-sub {
+  color: var(--text-dim);
+  font-size: var(--fs-sm);
+  margin-bottom: var(--space-4);
+}
+.create-channel-panel .field-label {
+  margin-top: var(--space-3);
+}
+.ccp-type {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  width: 100%;
+  text-align: left;
+  background: var(--bg-input);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  padding: var(--space-3);
+  margin-top: var(--space-2);
+  color: var(--text);
+  cursor: pointer;
+}
+.ccp-type.active {
+  border-color: var(--accent);
+  background: var(--bg);
+}
+.ccp-type > svg {
+  font-size: 18px;
+  color: var(--text-dim);
+  flex: 0 0 auto;
+}
+.ccp-type-text {
+  display: flex;
+  flex-direction: column;
+}
+.ccp-type-name {
+  font-weight: 600;
+}
+.ccp-type-desc {
+  font-size: var(--fs-sm);
+  color: var(--text-dim);
+}
+.ccp-name-label {
+  margin-top: var(--space-4);
+}
+.ccp-name-input {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  background: var(--bg-input);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  padding: 0 var(--space-3);
+  margin-top: var(--space-2);
+}
+.ccp-name-input svg {
+  color: var(--text-dim);
+  flex: 0 0 auto;
+}
+.ccp-name-input input {
+  border: none;
+  background: transparent;
+  margin: 0;
+  padding: 10px 0;
+}
+.ccp-name-input input:focus {
+  outline: none;
+}
+
+/* ---- Range sliders (mic/output volume) ---- */
+input[type="range"] {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 100%;
+  height: 6px;
+  padding: 0;
+  margin-top: 10px;
+  background: var(--bg-input);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  cursor: pointer;
+}
+input[type="range"]::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  background: var(--accent);
+  border: none;
+  cursor: pointer;
+}
+
+/* ---- Mic test row + level meter ---- */
+.mic-test-row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+}
+.mic-test-row button {
+  flex: 0 0 auto;
+  width: auto;
+}
+.mic-test-meter {
+  flex: 1;
+  height: 10px;
+  background: var(--bg-input);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  overflow: hidden;
+}
+.mic-test-fill {
+  height: 100%;
+  background: var(--ok);
+  border-radius: 999px;
+  transition: width 0.06s linear;
 }

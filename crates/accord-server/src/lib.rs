@@ -99,6 +99,10 @@ async fn run_inner(config: Config, shutdown: Option<oneshot::Receiver<()>>) -> a
         store.ensure_tavern(tavern_id).await?;
     }
 
+    // Ensure the default "Text Channels" / "Voice Channels" categories exist and
+    // any pre-existing channels (e.g. the seeded #general) are filed under them.
+    store.ensure_default_categories().await?;
+
     // Message bus: Redis (cross-instance) when configured, else in-process.
     let redis_url = (!config.redis_url.is_empty()).then_some(config.redis_url.as_str());
     let hub = Hub::new(redis_url).await?;

@@ -263,14 +263,21 @@ async fn handle_voice_state(
     if !store.is_member(group_id, user_id).await? {
         return Err(ServerError::PermissionDenied);
     }
+    // Attach the profile so peers see a name + avatar, not a raw id.
+    let (username, display_name, _avatar) = store
+        .user_profile(user_id)
+        .await?
+        .unwrap_or_else(|| (String::new(), String::new(), String::new()));
     let state = VoiceState {
         user_id,
+        username,
+        display_name,
         muted: update.muted,
         camera_on: update.camera_on,
         screen_on: update.screen_on,
     };
     if update.joined {
-        let participants = hub.voice_join(group_id, device_id, state);
+        let participants = hub.voice_join(group_id, device_id, state.clone());
         // Tell the channel this device joined / updated its state.
         hub.publish_voice_participant(
             group_id,

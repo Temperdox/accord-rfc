@@ -31,6 +31,18 @@ pub struct GroupSummaryRow {
     /// Channel behaviour: `"text"` | `"voice"` (orthogonal to `kind`).
     pub channel_kind: String,
     pub member_count: i64,
+    /// Category id this channel belongs to (`""` = uncategorized).
+    pub category_id: String,
+    /// Order within the category (or among uncategorized channels).
+    pub position: i32,
+}
+
+/// A channel category (orders + groups channels in the sidebar).
+#[derive(Debug, Clone, sqlx::FromRow)]
+pub struct CategoryRow {
+    pub id: Uuid,
+    pub name: String,
+    pub position: i32,
 }
 
 /// A channel/server member with the bits the member list needs. Built by hand in
@@ -43,6 +55,8 @@ pub struct MemberRow {
     pub display_name: String,
     /// The server owner flag (`users.is_owner`), not the per-group role string.
     pub is_owner: bool,
+    /// Small inline avatar (base64 data URL), or "" for none.
+    pub avatar_url: String,
 }
 
 /// The single server-level tavern identity row.

@@ -21,6 +21,17 @@ export interface GroupDto {
   /** "text" | "voice" for public channels (DMs/private are "text"). */
   channelKind: string;
   memberCount: number;
+  /** Category id this channel belongs to ("" = uncategorized). */
+  categoryId: string;
+  /** Order within its category. */
+  position: number;
+}
+
+/** A channel category (ordered group of channels in the sidebar). */
+export interface CategoryDto {
+  id: string;
+  name: string;
+  position: number;
 }
 
 export interface MessageDto {
@@ -92,10 +103,16 @@ export const listGroups = (): Promise<GroupDto[]> => invoke("list_groups");
 export interface AccountPill {
   username: string;
   isMain: boolean;
+  /** Cached avatar data-URL for the login picker, or "" for none. */
+  avatar: string;
 }
 
 /** Accounts created on this device (oldest first; main account first). */
 export const listAccounts = (): Promise<AccountPill[]> => invoke("list_accounts");
+
+/** Cache an account's avatar so the login picker can show it (home account). */
+export const setAccountAvatar = (username: string, avatar: string): Promise<void> =>
+  invoke("set_account_avatar", { username, avatar });
 
 /** A saved contact (cross-user DM addressing, federation phase 1). */
 export interface ContactDto {
@@ -696,17 +713,42 @@ export const assignRole = (userId: string, roleId: string): Promise<void> =>
 export const unassignRole = (userId: string, roleId: string): Promise<void> =>
   invoke("unassign_role", { userId, roleId });
 
-/** Create a public channel (text or voice). Gated server-side. */
+/** Create a public channel (text or voice) in a category. Gated server-side. */
 export const createChannel = (
   name: string,
   channelKind: "text" | "voice",
+  categoryId?: string,
   description?: string
 ): Promise<GroupDto> =>
-  invoke("create_channel", { name, channelKind, description: description ?? "" });
+  invoke("create_channel", {
+    name,
+    channelKind,
+    categoryId: categoryId ?? "",
+    description: description ?? "",
+  });
 
 /** Delete a public channel. Gated server-side. */
 export const deleteChannel = (groupId: string): Promise<void> =>
   invoke("delete_channel", { groupId });
+
+/** List the tavern's channel categories (ordered). */
+export const listCategories = (): Promise<CategoryDto[]> => invoke("list_categories");
+
+/** Create a channel category (gated MANAGE_CHANNELS). Lands at the bottom. */
+export const createCategory = (name: string): Promise<CategoryDto> =>
+  invoke("create_category", { name });
+
+/** Delete a category; its channels become uncategorized (gated MANAGE_CHANNELS). */
+export const deleteCategory = (id: string): Promise<void> =>
+  invoke("delete_category", { id });
+
+/** Reorder categories top-to-bottom (gated MANAGE_CHANNELS). */
+export const reorderCategories = (categoryIds: string[]): Promise<void> =>
+  invoke("reorder_categories", { categoryIds });
+
+/** Move + reorder channels: each id lands in categoryId at its list index. */
+export const reorderChannels = (categoryId: string, groupIds: string[]): Promise<void> =>
+  invoke("reorder_channels", { categoryId, groupIds });
 
 /** A tavern (server) member for the member list. */
 export interface MemberDto {
@@ -716,11 +758,27 @@ export interface MemberDto {
   isOwner: boolean;
   online: boolean;
   roleIds: string[];
+  /** Base64 data-URL avatar, or "" for none. */
+  avatarUrl: string;
 }
 
 /** List the members of a channel/server. */
 export const listMembers = (groupId: string): Promise<MemberDto[]> =>
   invoke("list_members", { groupId });
+
+/** The caller's own editable profile (display name + avatar) on this server. */
+export interface ProfileDto {
+  username: string;
+  displayName: string;
+  avatarUrl: string;
+}
+
+/** Fetch the caller's profile on the active server. */
+export const getMyProfile = (): Promise<ProfileDto> => invoke("get_my_profile");
+
+/** Update the caller's display name + base64 avatar on the active server. */
+export const updateProfile = (displayName: string, avatarUrl: string): Promise<ProfileDto> =>
+  invoke("update_profile", { displayName, avatarUrl });
 
 /** Tavern (server) identity. `iconUrl`/`bannerUrl` are base64 data URLs or "". */
 export interface TavernDto {
@@ -810,6 +868,9 @@ export const onModAlert = (handler: (a: ModAlert) => void): Promise<UnlistenFn> 
 // Media is WebRTC P2P in the webview (src/voice.ts, currently stubbed); these
 // commands carry only signaling over the message stream.
 
+/** This device's id on the active server (for WebRTC signaling addressing). */
+export const getMyDeviceId = (): Promise<string> => invoke("get_my_device_id");
+
 /** Join a voice channel (announces presence; webview then negotiates WebRTC). */
 export const joinVoice = (groupId: string): Promise<void> =>
   invoke("join_voice", { groupId });
@@ -844,6 +905,8 @@ export interface VoiceParticipant {
   muted: boolean;
   cameraOn: boolean;
   screenOn: boolean;
+  username: string;
+  displayName: string;
 }
 
 /** Subscribe to voice participant updates. */

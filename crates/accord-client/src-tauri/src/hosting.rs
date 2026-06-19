@@ -340,7 +340,6 @@ pub fn is_dev_build() -> bool {
 }
 
 /// Dev command: start the embedded local server.
-#[cfg(debug_assertions)]
 #[tauri::command]
 pub async fn dev_start_local_server(app: AppHandle, port: Option<u16>) -> Result<String, String> {
     // Dev quick-host is a public/open, plaintext server (easy manual-URL testing).
@@ -348,7 +347,6 @@ pub async fn dev_start_local_server(app: AppHandle, port: Option<u16>) -> Result
 }
 
 /// Dev command: stop the embedded local server.
-#[cfg(debug_assertions)]
 #[tauri::command]
 pub async fn dev_stop_local_server(app: AppHandle) -> Result<(), String> {
     stop(&app).await

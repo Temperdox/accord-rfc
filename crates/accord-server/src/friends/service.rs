@@ -144,7 +144,7 @@ impl FriendService for FriendSvc {
             .as_ref()
             .and_then(|u| Uuid::parse_str(&u.value).ok())
             .ok_or_else(|| ServerError::InvalidArgument("user id required".into()))?;
-        let (username, display_name) = self
+        let (username, display_name, _avatar) = self
             .store
             .user_profile(user_id)
             .await?

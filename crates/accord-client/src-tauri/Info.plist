@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- Merged into the macOS app bundle's Info.plist by the Tauri bundler. These
+     usage strings are REQUIRED for the OS to allow microphone/camera capture in
+     the embedded WKWebView; without them macOS hard-denies getUserMedia. The
+     in-webview auto-grant (a WKUIDelegate) is a separate, not-yet-wired step. -->
+<plist version="1.0">
+  <dict>
+    <key>NSMicrophoneUsageDescription</key>
+    <string>Accord uses your microphone for voice channels and calls.</string>
+    <key>NSCameraUsageDescription</key>
+    <string>Accord uses your camera for video in voice channels and calls.</string>
+  </dict>
+</plist>

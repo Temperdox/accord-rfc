@@ -16,7 +16,6 @@
 
 mod at_rest;
 mod commands;
-#[cfg(debug_assertions)]
 mod factory;
 mod grpc;
 mod history;
@@ -33,6 +32,7 @@ mod taverns;
 #[cfg(test)]
 mod taverns_it;
 mod vault;
+mod webview_perms;
 
 use state::Sessions;
 use tokio::sync::Mutex;
@@ -61,9 +61,13 @@ fn main() {
             tauri::async_runtime::spawn(async move {
                 mesh::auto_start_if_enabled(&mesh_handle).await;
             });
-            // The dev menu exists ONLY in debug builds, so it never ships and
-            // never clutters the production UI.
-            #[cfg(debug_assertions)]
+            // Auto-grant mic/camera so voice doesn't show a per-page consent popup
+            // for our own first-party UI (the OS privacy controls still apply).
+            if let Some(win) = tauri::Manager::get_webview_window(app, "main") {
+                webview_perms::auto_grant_media(&win);
+            }
+            // The Dev menu ships in all builds so end users can open logs / clear
+            // their data from a released installer.
             install_dev_menu(&*app)?;
             let _ = app;
             Ok(())
@@ -81,12 +85,11 @@ fn main() {
     });
 }
 
-/// Register IPC commands. Dev-only commands are compiled in exclusively for debug
-/// builds, so the hosting/mesh/log capabilities are unreachable in production.
+/// Register IPC commands. The Dev menu and its hosting/mesh/log/factory-reset
+/// commands ship in ALL builds (debug + release) so end users can open logs and
+/// clear their data from a released installer.
 fn register_handlers(builder: tauri::Builder<tauri::Wry>) -> tauri::Builder<tauri::Wry> {
-    #[cfg(debug_assertions)]
-    {
-        builder.invoke_handler(tauri::generate_handler![
+    builder.invoke_handler(tauri::generate_handler![
             commands::auth::connect,
             commands::auth::register,
             commands::auth::login,
@@ -99,8 +102,16 @@ fn register_handlers(builder: tauri::Builder<tauri::Wry>) -> tauri::Builder<taur
             commands::messaging::set_active_server,
             commands::messaging::create_channel,
             commands::messaging::delete_channel,
+            commands::messaging::list_categories,
+            commands::messaging::create_category,
+            commands::messaging::delete_category,
+            commands::messaging::reorder_categories,
+            commands::messaging::reorder_channels,
             commands::messaging::list_members,
             commands::messaging::get_my_permissions,
+            commands::messaging::get_my_device_id,
+            commands::messaging::get_my_profile,
+            commands::messaging::update_profile,
             commands::messaging::list_roles,
             commands::messaging::create_role,
             commands::messaging::update_role,
@@ -121,6 +132,7 @@ fn register_handlers(builder: tauri::Builder<tauri::Wry>) -> tauri::Builder<taur
             commands::voice::set_voice_state,
             commands::voice::send_voice_signal,
             commands::accounts::list_accounts,
+            commands::accounts::set_account_avatar,
             commands::contacts::my_contact_code,
             commands::contacts::add_contact,
             commands::contacts::list_contacts,
@@ -162,89 +174,13 @@ fn register_handlers(builder: tauri::Builder<tauri::Wry>) -> tauri::Builder<taur
             mesh::dev_stop_mesh,
             logging::dev_open_logs,
             logging::dev_log_dir,
-        ])
-    }
-    #[cfg(not(debug_assertions))]
-    {
-        builder.invoke_handler(tauri::generate_handler![
-            commands::auth::connect,
-            commands::auth::register,
-            commands::auth::login,
-            commands::auth::login_with_key,
-            commands::messaging::list_groups,
-            commands::messaging::send_public_message,
-            commands::messaging::send_private_message,
-            commands::messaging::fetch_public_history,
-            commands::messaging::fetch_private_history,
-            commands::messaging::set_active_server,
-            commands::messaging::create_channel,
-            commands::messaging::delete_channel,
-            commands::messaging::list_members,
-            commands::messaging::get_my_permissions,
-            commands::messaging::list_roles,
-            commands::messaging::create_role,
-            commands::messaging::update_role,
-            commands::messaging::delete_role,
-            commands::messaging::reorder_roles,
-            commands::messaging::assign_role,
-            commands::messaging::unassign_role,
-            commands::messaging::get_tavern,
-            commands::messaging::get_tavern_for,
-            commands::messaging::update_tavern,
-            commands::messaging::kick_member,
-            commands::messaging::ban_member,
-            commands::messaging::unban_member,
-            commands::messaging::list_bans,
-            commands::messaging::list_audit,
-            commands::voice::join_voice,
-            commands::voice::leave_voice,
-            commands::voice::set_voice_state,
-            commands::voice::send_voice_signal,
-            commands::accounts::list_accounts,
-            commands::contacts::my_contact_code,
-            commands::contacts::add_contact,
-            commands::contacts::list_contacts,
-            commands::contacts::remove_contact,
-            commands::contacts::set_contact_verified,
-            commands::friends::send_friend_request,
-            commands::friends::sync_friends,
-            commands::friends::respond_friend_request,
-            commands::friends::cancel_friend_request,
-            commands::friends::resend_friend_request,
-            commands::friends::peek_contact_code,
-            commands::blocks::block_contact,
-            commands::blocks::unblock_contact,
-            commands::blocks::list_blocks,
-            settings::get_settings,
-            settings::set_encrypt_at_rest,
-            settings::set_friend_request_policy,
-            settings::set_rendezvous_node,
-            settings::set_max_hosted_taverns,
-            mesh::get_mesh_status,
-            mesh::set_mesh_enabled,
-            mesh::mesh_connect,
-            mesh::mesh_disconnect,
-            commands::mls::start_dm,
-            commands::mls::open_contact_dm,
-            commands::mls::list_dms,
-            commands::server::host_private_server,
-            commands::server::host_public_server,
-            commands::server::create_invite_key,
-            commands::server::decode_invite,
-            commands::server::prepare_mesh,
-            taverns::create_tavern,
-            taverns::resume_hosted_taverns,
-            taverns::delete_tavern,
-            hosting::is_dev_build,
-        ])
-    }
+    ])
 }
 
 /// Build and install the dev-only **Dev** menu.
 ///
 /// The single home for test capabilities (there is deliberately no in-app dev
 /// banner): grouped submenus so new tools slot in without crowding the bar.
-#[cfg(debug_assertions)]
 fn install_dev_menu(app: &tauri::App) -> tauri::Result<()> {
     use tauri::menu::{MenuBuilder, MenuItemBuilder, PredefinedMenuItem, SubmenuBuilder};
 
@@ -321,7 +257,6 @@ fn install_dev_menu(app: &tauri::App) -> tauri::Result<()> {
 }
 
 /// Spawn a future on Tauri's async runtime (used by menu handlers).
-#[cfg(debug_assertions)]
 fn spawn<F: std::future::Future<Output = ()> + Send + 'static>(fut: F) {
     tauri::async_runtime::spawn(fut);
 }

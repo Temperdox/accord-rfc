@@ -23,6 +23,19 @@ pub struct GroupDto {
     /// "text" or "voice" (public channels). Empty/"" treated as text by the UI.
     pub channel_kind: String,
     pub member_count: u32,
+    /// Category id this channel belongs to ("" = uncategorized).
+    pub category_id: String,
+    /// Order within its category.
+    pub position: i32,
+}
+
+/// A channel category for the sidebar (ordered group of channels).
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CategoryDto {
+    pub id: String,
+    pub name: String,
+    pub position: i32,
 }
 
 /// A tavern (server) member for the member-list panel.
@@ -35,6 +48,16 @@ pub struct MemberDto {
     pub is_owner: bool,
     pub online: bool,
     pub role_ids: Vec<String>,
+    pub avatar_url: String,
+}
+
+/// The caller's own editable account profile (display name + avatar).
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProfileDto {
+    pub username: String,
+    pub display_name: String,
+    pub avatar_url: String,
 }
 
 /// Tavern (server) identity for the header + settings modal.
@@ -111,6 +134,8 @@ pub struct VoiceParticipantDto {
     pub muted: bool,
     pub camera_on: bool,
     pub screen_on: bool,
+    pub username: String,
+    pub display_name: String,
 }
 
 /// Payload of the `voice-signal` event: a relayed WebRTC signaling envelope. The
@@ -187,6 +212,8 @@ impl GroupDto {
                 s.channel_kind
             },
             member_count: s.member_count,
+            category_id: s.category_id,
+            position: s.position,
         }
     }
 }

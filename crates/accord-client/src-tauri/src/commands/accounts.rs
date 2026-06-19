@@ -17,6 +17,10 @@ struct StoredAccount {
     /// True for the first account created on this device (the main account).
     main: bool,
     created_at_ms: i64,
+    /// Cached avatar (base64 data URL) so the login picker can show a face before
+    /// any session exists. Updated on login + when the home profile changes.
+    #[serde(default)]
+    avatar: String,
 }
 
 /// An account as shown on the login screen.
@@ -25,6 +29,7 @@ struct StoredAccount {
 pub struct AccountPill {
     pub username: String,
     pub is_main: bool,
+    pub avatar: String,
 }
 
 fn path(app: &AppHandle) -> Result<std::path::PathBuf, String> {
@@ -67,10 +72,25 @@ pub fn record(app: &AppHandle, username: &str) {
         username: username.to_owned(),
         main: accounts.is_empty(),
         created_at_ms,
+        avatar: String::new(),
     });
     if let Err(e) = save(app, &accounts) {
         tracing::warn!("could not record account: {e}");
     }
+}
+
+/// Cache an account's avatar so the login picker can show it. Best-effort.
+#[tauri::command]
+pub fn set_account_avatar(app: AppHandle, username: String, avatar: String) -> Result<(), String> {
+    let mut accounts = load(&app);
+    let Some(acct) = accounts.iter_mut().find(|a| a.username == username) else {
+        return Ok(());
+    };
+    if acct.avatar == avatar {
+        return Ok(());
+    }
+    acct.avatar = avatar;
+    save(&app, &accounts)
 }
 
 /// List the accounts known on this device, oldest first (main account first).
@@ -81,6 +101,7 @@ pub fn list_accounts(app: AppHandle) -> Result<Vec<AccountPill>, String> {
         .map(|a| AccountPill {
             username: a.username,
             is_main: a.main,
+            avatar: a.avatar,
         })
         .collect())
 }

@@ -38,7 +38,60 @@ service GroupService {
   rpc ListBans(ListBansRequest) returns (ListBansResponse);
   // Moderation audit log (guardrail outcomes + admin actions). MANAGE_SERVER.
   rpc ListAudit(ListAuditRequest) returns (ListAuditResponse);
+  // Channel categories (MANAGE_CHANNELS). Categories group + order channels.
+  rpc ListCategories(ListCategoriesRequest) returns (ListCategoriesResponse);
+  rpc CreateCategory(CreateCategoryRequest) returns (Category);
+  rpc DeleteCategory(DeleteCategoryRequest) returns (DeleteCategoryResponse);
+  rpc ReorderCategories(ReorderCategoriesRequest) returns (ReorderCategoriesResponse);
+  // Set the category + order of channels: every id in `group_ids` is moved into
+  // `category_id` with position = its index. Handles in-category reorder and
+  // cross-category moves (call with the destination category's new ordering).
+  rpc ReorderChannels(ReorderChannelsRequest) returns (ReorderChannelsResponse);
+  // This account's editable profile (display name + avatar). Each tavern is its
+  // own account, so this is the per-server profile; the home account = "main".
+  rpc GetMyProfile(GetMyProfileRequest) returns (ProfileResponse);
+  rpc UpdateProfile(UpdateProfileRequest) returns (ProfileResponse);
 }
+
+message GetMyProfileRequest {}
+message UpdateProfileRequest {
+  string display_name = 1;
+  string avatar_url = 2;
+}
+message ProfileResponse {
+  string username = 1;
+  string display_name = 2;
+  string avatar_url = 3;
+}
+
+message Category {
+  string id = 1;
+  string name = 2;
+  int32 position = 3;
+}
+
+message ListCategoriesRequest {}
+message ListCategoriesResponse {
+  repeated Category categories = 1;
+}
+message CreateCategoryRequest {
+  string name = 1;
+}
+message DeleteCategoryRequest {
+  string id = 1;
+}
+message DeleteCategoryResponse {}
+message ReorderCategoriesRequest {
+  // Top-to-bottom order.
+  repeated string category_ids = 1;
+}
+message ReorderCategoriesResponse {}
+message ReorderChannelsRequest {
+  // The destination category ("" = uncategorized) and its new channel order.
+  string category_id = 1;
+  repeated string group_ids = 2;
+}
+message ReorderChannelsResponse {}
 
 message ListAuditRequest {
   uint32 limit = 1;
@@ -61,6 +114,8 @@ message CreatePublicGroupRequest {
   // "text" (default) or "voice". Distinct from ChatKind (public/private), which
   // is the *encryption* model; channel_kind is the channel's *behaviour*.
   string channel_kind = 3;
+  // Category to create the channel in ("" = uncategorized). Lands at the bottom.
+  string category_id = 4;
 }
 
 message CreatePrivateGroupRequest {
@@ -107,6 +162,9 @@ message GroupSummary {
   uint32 member_count = 4;
   // "text" or "voice" (see CreatePublicGroupRequest.channel_kind).
   string channel_kind = 5;
+  // Category membership ("" = uncategorized) and order within it.
+  string category_id = 6;
+  int32 position = 7;
 }
 
 message GetGroupInfoRequest {
@@ -145,6 +203,8 @@ message MemberInfo {
   bool online = 5;
   // Role ids assigned to this member (decimal-string perms live on the Role).
   repeated string role_ids = 6;
+  // Small inline avatar (base64 data URL), or "" for none.
+  string avatar_url = 7;
 }
 
 // ---- Tavern (server) identity ----------------------------------------------

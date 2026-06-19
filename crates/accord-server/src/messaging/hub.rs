@@ -169,6 +169,8 @@ pub fn voice_participant_msg(
             muted: state.muted,
             camera_on: state.camera_on,
             screen_on: state.screen_on,
+            username: state.username.clone(),
+            display_name: state.display_name.clone(),
         })),
     }
 }
@@ -241,9 +243,11 @@ struct Registry {
 /// client). Tracked in-memory per instance - single-instance only, like the
 /// dynamic `subscribe`/`is_connected` machinery above. Cross-instance voice
 /// presence would propagate over the bus, deferred.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 pub struct VoiceState {
     pub user_id: Uuid,
+    pub username: String,
+    pub display_name: String,
     pub muted: bool,
     pub camera_on: bool,
     pub screen_on: bool,
@@ -395,7 +399,7 @@ impl Hub {
         let mut voice = self.voice.lock().expect("hub voice poisoned");
         let members = voice.entry(group).or_default();
         members.insert(device, state);
-        members.iter().map(|(d, s)| (*d, *s)).collect()
+        members.iter().map(|(d, s)| (*d, s.clone())).collect()
     }
 
     /// Update a device's voice state in a channel (no-op if not present).

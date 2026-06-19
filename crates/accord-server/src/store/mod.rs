@@ -23,9 +23,9 @@ use uuid::Uuid;
 
 use crate::error::ServerResult;
 use model::{
-    AuditRow, BackupRow, BanRow, ClaimedKeyPackage, FriendRequestRow, GroupSummaryRow, InboxRow,
-    MemberRow, PrivateMessageRow, PublicMessageRow, RefreshRow, RoleRow, RoleWrite, TavernRow,
-    UserRow,
+    AuditRow, BackupRow, BanRow, CategoryRow, ClaimedKeyPackage, FriendRequestRow, GroupSummaryRow,
+    InboxRow, MemberRow, PrivateMessageRow, PublicMessageRow, RefreshRow, RoleRow, RoleWrite,
+    TavernRow, UserRow,
 };
 
 /// Most unconsumed KeyPackages kept per device. Clients re-publish a batch on
@@ -76,10 +76,17 @@ pub trait Store: Send + Sync + std::fmt::Debug {
     -> ServerResult<Option<UserRow>>;
     /// Whether the given user is a guest (open_dms DM-only account).
     async fn is_user_guest(&self, user_id: Uuid) -> ServerResult<bool>;
-    /// Public profile bits `(username, display_name)` of a user, if they exist.
-    /// Backs `FriendService::GetPublicProfile`; profile media columns (avatar,
-    /// banner) extend this when those ship.
-    async fn user_profile(&self, user_id: Uuid) -> ServerResult<Option<(String, String)>>;
+    /// Public profile bits `(username, display_name, avatar_url)` of a user.
+    /// Backs `FriendService::GetPublicProfile` + voice/member presence.
+    async fn user_profile(&self, user_id: Uuid)
+    -> ServerResult<Option<(String, String, String)>>;
+    /// Update this account's editable profile (display name + avatar data URL).
+    async fn update_profile(
+        &self,
+        user_id: Uuid,
+        display_name: &str,
+        avatar_url: &str,
+    ) -> ServerResult<()>;
     /// Whether any account already uses this public identity key.
     async fn identity_exists(&self, identity_pubkey: &[u8]) -> ServerResult<bool>;
     /// Total number of registered users (used to detect the first/owner signup).
@@ -162,12 +169,14 @@ pub trait Store: Send + Sync + std::fmt::Debug {
     async fn delete_refresh_token(&self, token: &str) -> ServerResult<()>;
 
     // --- groups ---
-    /// Create a public channel. `channel_kind` is `"text"` or `"voice"`.
+    /// Create a public channel. `channel_kind` is `"text"` or `"voice"`;
+    /// `category_id` is `""` for uncategorized. Lands at the bottom of its list.
     async fn create_public_group(
         &self,
         name: &str,
         description: &str,
         channel_kind: &str,
+        category_id: &str,
     ) -> ServerResult<Uuid>;
     async fn create_private_group_with_id(&self, id: Uuid, name: &str) -> ServerResult<()>;
     async fn add_member(&self, group_id: Uuid, user_id: Uuid, role: &str) -> ServerResult<()>;
@@ -180,6 +189,21 @@ pub trait Store: Send + Sync + std::fmt::Debug {
     async fn group_ids_for_user(&self, user_id: Uuid) -> ServerResult<Vec<Uuid>>;
     async fn list_groups_for_user(&self, user_id: Uuid) -> ServerResult<Vec<GroupSummaryRow>>;
     async fn get_group(&self, group_id: Uuid) -> ServerResult<GroupSummaryRow>;
+
+    // --- channel categories ---
+    /// Seed the default "Text Channels" / "Voice Channels" categories if none
+    /// exist, and file any uncategorized channels under them by channel_kind.
+    async fn ensure_default_categories(&self) -> ServerResult<()>;
+    async fn list_categories(&self) -> ServerResult<Vec<CategoryRow>>;
+    /// Create a category at the bottom (position = current max + 1).
+    async fn create_category(&self, name: &str) -> ServerResult<Uuid>;
+    /// Delete a category; its channels become uncategorized (category_id = "").
+    async fn delete_category(&self, id: Uuid) -> ServerResult<()>;
+    /// Set category positions from a top-to-bottom id list.
+    async fn reorder_categories(&self, ordered: &[Uuid]) -> ServerResult<()>;
+    /// Move `ordered` channels into `category_id`, position = index in the list.
+    async fn reorder_channels(&self, category_id: &str, ordered: &[Uuid])
+    -> ServerResult<()>;
     async fn member_ids(&self, group_id: Uuid) -> ServerResult<Vec<Uuid>>;
     /// Members of a group with their profile bits + server-owner flag, for the
     /// member list. RBAC role ids + online status are layered on in the service.
