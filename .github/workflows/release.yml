@@ -13,11 +13,12 @@ on:
       - "v*"
   workflow_dispatch:
 
-permissions:
-  contents: write # tauri-action creates the Release and uploads installers
+permissions: {}
 
 jobs:
   build:
+    permissions:
+      contents: write # tauri-action creates the Release and uploads installers
     strategy:
       fail-fast: false
       matrix:
@@ -34,6 +35,8 @@ jobs:
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
 
       - name: Install Linux build dependencies (Tauri v2)
         if: matrix.os == 'ubuntu-latest'
@@ -46,9 +49,11 @@ jobs:
             libayatana-appindicator3-dev \
             librsvg2-dev
 
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@2c7215f132e9ebf062739d9130488b56d53c060c # stable
+        with:
+          toolchain: stable
 
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
         with:
           workspaces: ". -> target"
 
@@ -60,12 +65,12 @@ jobs:
 
       - name: Install frontend dependencies
         working-directory: crates/accord-client
-        run: npm ci
+        run: npm ci --ignore-scripts
 
       # tauri-action runs the configured beforeBuildCommand (npm run build),
       # bundles per-OS installers, and uploads them to the Release for the tag.
       - name: Build client + publish installers
-        uses: tauri-apps/tauri-action@v0
+        uses: tauri-apps/tauri-action@84b9d35b5fc46c1e45415bdb6144030364f7ebc5 # v0.6.2
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
