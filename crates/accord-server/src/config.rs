@@ -54,15 +54,22 @@ pub struct Config {
     pub tls_key_pem: Option<String>,
 }
 
+/// Development-only default database credentials. Matches docker-compose.yml
+/// service credentials + remapped host ports (55432/56379 avoid clashing with
+/// local Postgres/Redis). [`Config::validate`] refuses to serve on a
+/// non-loopback address while this is still in effect.
+const DEV_DATABASE_URL: &str = "postgres://accord:accord@localhost:55432/accord";
+
+/// Development-only default JWT secret; same deal as [`DEV_DATABASE_URL`].
+const DEV_JWT_SECRET: &str = "dev-only-insecure-secret-change-me";
+
 impl Default for Config {
     fn default() -> Self {
         Self {
             bind_addr: "127.0.0.1:50051".parse().expect("valid default bind addr"),
-            // Matches docker-compose.yml service credentials + remapped host
-            // ports (55432/56379 avoid clashing with local Postgres/Redis).
-            database_url: "postgres://accord:accord@localhost:55432/accord".to_owned(),
+            database_url: DEV_DATABASE_URL.to_owned(),
             redis_url: "redis://localhost:56379".to_owned(),
-            jwt_secret: "dev-only-insecure-secret-change-me".to_owned(),
+            jwt_secret: DEV_JWT_SECRET.to_owned(),
             access_token_ttl_secs: 3600,
             db_max_connections: 10,
             require_invite: false,
@@ -90,5 +97,81 @@ impl Config {
             .merge(Toml::file("accord-server.toml"))
             .merge(Env::prefixed("ACCORD_"))
             .extract()
+    }
+
+    /// Guard against accidentally exposing a dev-configured server.
+    ///
+    /// Serving on a non-loopback address while the dev `database_url` or
+    /// `jwt_secret` defaults are still in effect would let anyone who can
+    /// reach the port forge access tokens or try the well-known database
+    /// credentials, so startup refuses instead. Loopback binds (the `cargo
+    /// run` dev flow) are exempt, as are deployments that override the
+    /// defaults - the embedded client server always generates its own secret
+    /// and SQLite URL. Set `ACCORD_ALLOW_DEV_CREDENTIALS=1` to bypass for
+    /// deliberate LAN testing.
+    ///
+    /// # Errors
+    /// Returns a message naming the offending fields when the bind address is
+    /// non-loopback and dev defaults are still present.
+    pub fn validate(&self) -> Result<(), String> {
+        if self.bind_addr.ip().is_loopback()
+            || std::env::var_os("ACCORD_ALLOW_DEV_CREDENTIALS").is_some_and(|v| v == "1")
+        {
+            return Ok(());
+        }
+        let mut dev_fields = Vec::new();
+        if self.database_url == DEV_DATABASE_URL {
+            dev_fields.push("database_url (ACCORD_DATABASE_URL)");
+        }
+        if self.jwt_secret == DEV_JWT_SECRET {
+            dev_fields.push("jwt_secret (ACCORD_JWT_SECRET)");
+        }
+        if dev_fields.is_empty() {
+            return Ok(());
+        }
+        Err(format!(
+            "refusing to bind {} with development credentials still set: {}. \
+             Override them (env vars in parentheses) or set \
+             ACCORD_ALLOW_DEV_CREDENTIALS=1 for deliberate LAN testing.",
+            self.bind_addr,
+            dev_fields.join(", ")
+        ))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn default_loopback_config_is_valid() {
+        Config::default()
+            .validate()
+            .expect("loopback + dev defaults is the supported dev flow");
+    }
+
+    #[test]
+    fn non_loopback_with_dev_defaults_is_refused() {
+        let mut config = Config::default();
+        config.bind_addr = "0.0.0.0:50051".parse().expect("valid addr");
+        let err = config
+            .validate()
+            .expect_err("dev credentials must not be exposed");
+        assert!(
+            err.contains("database_url"),
+            "names the leaked field: {err}"
+        );
+        assert!(err.contains("jwt_secret"), "names the leaked field: {err}");
+    }
+
+    #[test]
+    fn non_loopback_with_overridden_credentials_is_valid() {
+        let mut config = Config::default();
+        config.bind_addr = "[::]:50051".parse().expect("valid addr");
+        config.database_url = "sqlite:/tmp/test.db".to_owned();
+        config.jwt_secret = "a-real-secret".to_owned();
+        config
+            .validate()
+            .expect("overridden credentials may be exposed");
     }
 }

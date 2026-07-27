@@ -71,6 +71,9 @@ pub async fn run_with_shutdown(
 }
 
 async fn run_inner(config: Config, shutdown: Option<oneshot::Receiver<()>>) -> anyhow::Result<()> {
+    // Refuse to expose dev-default credentials on a non-loopback bind.
+    config.validate().map_err(anyhow::Error::msg)?;
+
     // Database (Postgres or SQLite, chosen from the URL) + migrations.
     let store = store::connect(&config.database_url, config.db_max_connections).await?;
     tracing::info!(
