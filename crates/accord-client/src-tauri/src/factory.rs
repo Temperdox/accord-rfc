@@ -35,13 +35,22 @@ pub async fn factory_reset(app: &AppHandle) -> Result<(), String> {
     // embedded servers hold their SQLite databases open - both the home node and
     // every hosted tavern (each keeps `taverns/<id>/accord-host.db` open, which
     // otherwise blocks deleting the `taverns/` directory on Windows).
-    if tokio::time::timeout(PHASE, crate::mesh::stop(app)).await.is_err() {
+    if tokio::time::timeout(PHASE, crate::mesh::stop(app))
+        .await
+        .is_err()
+    {
         tracing::warn!("mesh stop timed out; continuing reset");
     }
-    if tokio::time::timeout(PHASE, crate::hosting::stop(app)).await.is_err() {
+    if tokio::time::timeout(PHASE, crate::hosting::stop(app))
+        .await
+        .is_err()
+    {
         tracing::warn!("embedded server stop timed out; continuing reset");
     }
-    if tokio::time::timeout(PHASE, crate::taverns::stop_all(app)).await.is_err() {
+    if tokio::time::timeout(PHASE, crate::taverns::stop_all(app))
+        .await
+        .is_err()
+    {
         tracing::warn!("hosted-tavern stop timed out; continuing reset");
     }
 

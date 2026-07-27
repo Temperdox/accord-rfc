@@ -14,7 +14,9 @@ use tokio::sync::mpsc;
 use crate::state::SharedSessions;
 
 /// The active session's outbound `MessageStream` sender, or an error.
-async fn outbound(state: &State<'_, SharedSessions>) -> Result<mpsc::Sender<ClientMessage>, String> {
+async fn outbound(
+    state: &State<'_, SharedSessions>,
+) -> Result<mpsc::Sender<ClientMessage>, String> {
     state
         .lock()
         .await

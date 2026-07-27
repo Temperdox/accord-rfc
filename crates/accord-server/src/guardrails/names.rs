@@ -49,7 +49,11 @@ pub fn assess_name(name: &str, recent: &[String]) -> NameVerdict {
 
 /// Lowercase, trim, collapse internal whitespace.
 fn normalize(s: &str) -> String {
-    s.trim().to_lowercase().split_whitespace().collect::<Vec<_>>().join(" ")
+    s.trim()
+        .to_lowercase()
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 /// Heuristic random-string detector. Returns a reason when the name looks

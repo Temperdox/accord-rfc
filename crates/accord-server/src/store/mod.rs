@@ -72,14 +72,12 @@ pub trait Store: Send + Sync + std::fmt::Debug {
     ) -> ServerResult<Uuid>;
     async fn find_user_by_username(&self, username: &str) -> ServerResult<Option<UserRow>>;
     /// Find a user by their registered identity public key (for key-based login).
-    async fn find_user_by_identity(&self, identity_pubkey: &[u8])
-    -> ServerResult<Option<UserRow>>;
+    async fn find_user_by_identity(&self, identity_pubkey: &[u8]) -> ServerResult<Option<UserRow>>;
     /// Whether the given user is a guest (open_dms DM-only account).
     async fn is_user_guest(&self, user_id: Uuid) -> ServerResult<bool>;
     /// Public profile bits `(username, display_name, avatar_url)` of a user.
     /// Backs `FriendService::GetPublicProfile` + voice/member presence.
-    async fn user_profile(&self, user_id: Uuid)
-    -> ServerResult<Option<(String, String, String)>>;
+    async fn user_profile(&self, user_id: Uuid) -> ServerResult<Option<(String, String, String)>>;
     /// Update this account's editable profile (display name + avatar data URL).
     async fn update_profile(
         &self,
@@ -202,8 +200,7 @@ pub trait Store: Send + Sync + std::fmt::Debug {
     /// Set category positions from a top-to-bottom id list.
     async fn reorder_categories(&self, ordered: &[Uuid]) -> ServerResult<()>;
     /// Move `ordered` channels into `category_id`, position = index in the list.
-    async fn reorder_channels(&self, category_id: &str, ordered: &[Uuid])
-    -> ServerResult<()>;
+    async fn reorder_channels(&self, category_id: &str, ordered: &[Uuid]) -> ServerResult<()>;
     async fn member_ids(&self, group_id: Uuid) -> ServerResult<Vec<Uuid>>;
     /// Members of a group with their profile bits + server-owner flag, for the
     /// member list. RBAC role ids + online status are layered on in the service.

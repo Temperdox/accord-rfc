@@ -197,10 +197,7 @@ impl Store for SqliteStore {
         }
     }
 
-    async fn find_user_by_identity(
-        &self,
-        identity_pubkey: &[u8],
-    ) -> ServerResult<Option<UserRow>> {
+    async fn find_user_by_identity(&self, identity_pubkey: &[u8]) -> ServerResult<Option<UserRow>> {
         let row = sqlx::query(
             "SELECT id, username, display_name, password_hash, is_guest \
              FROM users WHERE identity_key = ?",
@@ -228,10 +225,7 @@ impl Store for SqliteStore {
         Ok(row.is_some_and(|(g,)| g != 0))
     }
 
-    async fn user_profile(
-        &self,
-        user_id: Uuid,
-    ) -> ServerResult<Option<(String, String, String)>> {
+    async fn user_profile(&self, user_id: Uuid) -> ServerResult<Option<(String, String, String)>> {
         let row: Option<(String, String, String)> =
             sqlx::query_as("SELECT username, display_name, avatar_url FROM users WHERE id = ?")
                 .bind(user_id.to_string())
@@ -319,10 +313,9 @@ impl Store for SqliteStore {
         let id = Uuid::now_v7();
         // New roles sit just above the current top (max position + 1), always
         // above @everyone (position 0).
-        let (max_pos,): (i64,) =
-            sqlx::query_as("SELECT COALESCE(MAX(position), 0) FROM roles")
-                .fetch_one(&self.pool)
-                .await?;
+        let (max_pos,): (i64,) = sqlx::query_as("SELECT COALESCE(MAX(position), 0) FROM roles")
+            .fetch_one(&self.pool)
+            .await?;
         sqlx::query(
             "INSERT INTO roles
                 (id, name, permissions, position, is_default, color, icon, hoist, mentionable, created_at)
@@ -668,12 +661,11 @@ impl Store for SqliteStore {
     ) -> ServerResult<Uuid> {
         let id = Uuid::now_v7();
         // Land at the bottom of the target category.
-        let (max_pos,): (i64,) = sqlx::query_as(
-            "SELECT COALESCE(MAX(position), -1) FROM groups WHERE category_id = ?",
-        )
-        .bind(category_id)
-        .fetch_one(&self.pool)
-        .await?;
+        let (max_pos,): (i64,) =
+            sqlx::query_as("SELECT COALESCE(MAX(position), -1) FROM groups WHERE category_id = ?")
+                .bind(category_id)
+                .fetch_one(&self.pool)
+                .await?;
         sqlx::query(
             "INSERT INTO groups
                 (id, name, description, kind, channel_kind, category_id, position, created_at)
@@ -829,14 +821,19 @@ impl Store for SqliteStore {
         let text_id = Uuid::now_v7();
         let voice_id = Uuid::now_v7();
         let now = Utc::now().timestamp_millis();
-        for (id, name, pos) in [(text_id, "Text Channels", 0), (voice_id, "Voice Channels", 1)] {
-            sqlx::query("INSERT INTO categories (id, name, position, created_at) VALUES (?, ?, ?, ?)")
-                .bind(id.to_string())
-                .bind(name)
-                .bind(pos)
-                .bind(now)
-                .execute(&self.pool)
-                .await?;
+        for (id, name, pos) in [
+            (text_id, "Text Channels", 0),
+            (voice_id, "Voice Channels", 1),
+        ] {
+            sqlx::query(
+                "INSERT INTO categories (id, name, position, created_at) VALUES (?, ?, ?, ?)",
+            )
+            .bind(id.to_string())
+            .bind(name)
+            .bind(pos)
+            .bind(now)
+            .execute(&self.pool)
+            .await?;
         }
         // File existing uncategorized channels under the matching category.
         sqlx::query(
@@ -873,9 +870,10 @@ impl Store for SqliteStore {
 
     async fn create_category(&self, name: &str) -> ServerResult<Uuid> {
         let id = Uuid::now_v7();
-        let (max_pos,): (i64,) = sqlx::query_as("SELECT COALESCE(MAX(position), -1) FROM categories")
-            .fetch_one(&self.pool)
-            .await?;
+        let (max_pos,): (i64,) =
+            sqlx::query_as("SELECT COALESCE(MAX(position), -1) FROM categories")
+                .fetch_one(&self.pool)
+                .await?;
         sqlx::query("INSERT INTO categories (id, name, position, created_at) VALUES (?, ?, ?, ?)")
             .bind(id.to_string())
             .bind(name)
@@ -1576,7 +1574,7 @@ mod tests {
             .expect("user");
 
         let voice = store
-            .create_public_group("Lounge", "", "voice")
+            .create_public_group("Lounge", "", "voice", "")
             .await
             .expect("voice channel");
         store.add_member(voice, owner, "owner").await.expect("join");
@@ -1585,7 +1583,10 @@ mod tests {
         assert_eq!(g.channel_kind, "voice");
         // A normal text channel (the service normalizes empty -> "text" before
         // calling the store, which persists the kind verbatim).
-        let text = store.create_public_group("general", "", "text").await.expect("text");
+        let text = store
+            .create_public_group("general", "", "text", "")
+            .await
+            .expect("text");
         assert_eq!(store.get_group(text).await.unwrap().channel_kind, "text");
 
         let members = store.list_members(voice).await.expect("members");
@@ -1618,11 +1619,14 @@ mod tests {
         store.ensure_tavern(tavern_id).await.unwrap();
         assert_eq!(store.get_tavern().await.unwrap().name, "");
         store
-            .upsert_tavern(tavern_id, "My Tavern", "icon", "desc")
+            .upsert_tavern(tavern_id, "My Tavern", "icon", "desc", "")
             .await
             .unwrap();
         let t = store.get_tavern().await.unwrap();
-        assert_eq!((t.name.as_str(), t.icon_url.as_str()), ("My Tavern", "icon"));
+        assert_eq!(
+            (t.name.as_str(), t.icon_url.as_str()),
+            ("My Tavern", "icon")
+        );
 
         assert!(!store.is_banned(target).await.unwrap());
         store.ban_user(target, owner, "spam").await.unwrap();
@@ -1632,7 +1636,13 @@ mod tests {
         assert!(!store.is_banned(target).await.unwrap());
 
         store
-            .record_audit(owner, "delete_channel", "general", "throttle", "rate-limited")
+            .record_audit(
+                owner,
+                "delete_channel",
+                "general",
+                "throttle",
+                "rate-limited",
+            )
             .await
             .unwrap();
         let audit = store.list_audit(10).await.unwrap();

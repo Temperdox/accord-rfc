@@ -14,9 +14,7 @@
 use std::time::Duration;
 
 use accord_proto::auth_service_client::AuthServiceClient;
-use accord_proto::{
-    ChallengeRequest, KeyLoginRequest, LoginRequest, RegisterRequest,
-};
+use accord_proto::{ChallengeRequest, KeyLoginRequest, LoginRequest, RegisterRequest};
 use ed25519_dalek::{Signer, SigningKey};
 use tokio::sync::oneshot;
 use tonic::transport::Channel;

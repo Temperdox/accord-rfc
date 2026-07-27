@@ -102,7 +102,12 @@ pub async fn create_invite_key(
 /// Extract the port from a `scheme://host:port` endpoint (the host's own
 /// loopback endpoint carries its real bind port).
 fn parse_port(endpoint: &str) -> Option<u16> {
-    endpoint.trim_end_matches('/').rsplit(':').next()?.parse().ok()
+    endpoint
+        .trim_end_matches('/')
+        .rsplit(':')
+        .next()?
+        .parse()
+        .ok()
 }
 
 /// Decoded invite info handed to the frontend to drive the join flow.

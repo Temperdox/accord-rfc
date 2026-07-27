@@ -17,16 +17,17 @@
 use std::time::Duration;
 
 use accord_proto::auth_service_client::AuthServiceClient;
+use accord_proto::client_message::Payload as ClientPayload;
 use accord_proto::group_service_client::GroupServiceClient;
 use accord_proto::messaging_service_client::MessagingServiceClient;
 use accord_proto::role_service_client::RoleServiceClient;
 use accord_proto::server_message::Payload as ServerPayload;
 use accord_proto::{
-    AddMembersRequest, AssignRoleRequest, BanMemberRequest, ClientMessage, CreatePublicGroupRequest,
-    CreateRoleRequest, DeleteGroupRequest, GetTavernRequest, GroupId, ListGroupsRequest,
-    ListMembersRequest, LoginRequest, RegisterRequest, UpdateTavernRequest, UserId, VoiceStateUpdate,
+    AddMembersRequest, AssignRoleRequest, BanMemberRequest, ClientMessage,
+    CreatePublicGroupRequest, CreateRoleRequest, DeleteGroupRequest, GetTavernRequest, GroupId,
+    ListGroupsRequest, ListMembersRequest, LoginRequest, RegisterRequest, UpdateTavernRequest,
+    UserId, VoiceStateUpdate,
 };
-use accord_proto::client_message::Payload as ClientPayload;
 use accord_types::perms::Permissions;
 use tokio::sync::{mpsc, oneshot};
 use tokio_stream::wrappers::ReceiverStream;
@@ -138,14 +139,19 @@ async fn main() -> anyhow::Result<()> {
         .iter()
         .find(|g| g.name == "Lounge")
         .expect("Lounge listed");
-    anyhow::ensure!(voice.channel_kind == "voice", "voice channel_kind preserved");
+    anyhow::ensure!(
+        voice.channel_kind == "voice",
+        "voice channel_kind preserved"
+    );
     println!("[ok] text + voice channels created; channel_kind round-trips");
 
     // --- member list ---
     let members = owner
         .list_members(authed(
             Request::new(ListMembersRequest {
-                group_id: Some(GroupId { value: lounge.clone() }),
+                group_id: Some(GroupId {
+                    value: lounge.clone(),
+                }),
             }),
             &owner_tok,
         ))
@@ -163,8 +169,12 @@ async fn main() -> anyhow::Result<()> {
     GroupServiceClient::new(channel.clone())
         .add_members(authed(
             Request::new(AddMembersRequest {
-                group_id: Some(GroupId { value: lounge.clone() }),
-                member_ids: vec![UserId { value: bob_id.clone() }],
+                group_id: Some(GroupId {
+                    value: lounge.clone(),
+                }),
+                member_ids: vec![UserId {
+                    value: bob_id.clone(),
+                }],
             }),
             &bob_tok,
         ))
@@ -179,7 +189,10 @@ async fn main() -> anyhow::Result<()> {
     bob_tx.send(voice_join(&lounge)).await.ok();
 
     let saw_participant = wait_for_voice_participant(&mut owner_inbound, &bob_id).await;
-    anyhow::ensure!(saw_participant, "owner received a VoiceParticipant for the joiner");
+    anyhow::ensure!(
+        saw_participant,
+        "owner received a VoiceParticipant for the joiner"
+    );
     println!("[ok] voice participant fan-out delivered over MessageStream");
 
     // --- guardrails bind admins: throttle a destructive burst ---
@@ -198,7 +211,9 @@ async fn main() -> anyhow::Result<()> {
     RoleServiceClient::new(channel.clone())
         .assign_role(authed(
             Request::new(AssignRoleRequest {
-                user_id: Some(UserId { value: bob_id.clone() }),
+                user_id: Some(UserId {
+                    value: bob_id.clone(),
+                }),
                 role_id: admin_role.id,
             }),
             &owner_tok,
@@ -266,14 +281,19 @@ async fn main() -> anyhow::Result<()> {
         .get_tavern(authed(Request::new(GetTavernRequest {}), &owner_tok))
         .await?
         .into_inner();
-    anyhow::ensure!(tavern.name == "The Rusty Tankard", "tavern name round-trips");
+    anyhow::ensure!(
+        tavern.name == "The Rusty Tankard",
+        "tavern name round-trips"
+    );
     println!("[ok] tavern identity update/get round-trips");
 
     // --- ban: a banned account is refused at login ---
     owner
         .ban_member(authed(
             Request::new(BanMemberRequest {
-                user_id: Some(UserId { value: bob_id.clone() }),
+                user_id: Some(UserId {
+                    value: bob_id.clone(),
+                }),
                 reason: "smoke test".into(),
             }),
             &owner_tok,
@@ -293,7 +313,9 @@ async fn main() -> anyhow::Result<()> {
 fn voice_join(group_id: &str) -> ClientMessage {
     ClientMessage {
         payload: Some(ClientPayload::VoiceState(VoiceStateUpdate {
-            group_id: Some(GroupId { value: group_id.to_owned() }),
+            group_id: Some(GroupId {
+                value: group_id.to_owned(),
+            }),
             joined: true,
             muted: false,
             camera_on: false,

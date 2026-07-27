@@ -12,17 +12,18 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use accord_proto::group_service_server::GroupService;
 use accord_proto::{
-    AddMembersRequest, AddMembersResponse, AuditEntry, BanInfo, BanMemberRequest, BanMemberResponse,
-    Category, ChatKind, CreateCategoryRequest, CreateGroupResponse, CreatePrivateGroupRequest,
-    CreatePublicGroupRequest, DeleteCategoryRequest, DeleteCategoryResponse, DeleteGroupRequest,
-    DeleteGroupResponse, GetGroupInfoRequest, GetGroupInfoResponse, GetTavernRequest, GroupId,
-    GroupSummary, KickMemberRequest, KickMemberResponse, ListAuditRequest, ListAuditResponse,
-    ListBansRequest, ListBansResponse, ListCategoriesRequest, ListCategoriesResponse,
-    GetMyProfileRequest, ListGroupsRequest, ListGroupsResponse, ListMembersRequest,
-    ListMembersResponse, MemberInfo, ModAlert, ProfileResponse, ReorderCategoriesRequest,
-    ReorderCategoriesResponse, ReorderChannelsRequest, ReorderChannelsResponse, RemoveMembersRequest,
-    RemoveMembersResponse, Severity, TavernInfo, UnbanMemberRequest, UnbanMemberResponse,
-    UpdateProfileRequest, UpdateTavernRequest, UserId,
+    AddMembersRequest, AddMembersResponse, AuditEntry, BanInfo, BanMemberRequest,
+    BanMemberResponse, Category, ChatKind, CreateCategoryRequest, CreateGroupResponse,
+    CreatePrivateGroupRequest, CreatePublicGroupRequest, DeleteCategoryRequest,
+    DeleteCategoryResponse, DeleteGroupRequest, DeleteGroupResponse, GetGroupInfoRequest,
+    GetGroupInfoResponse, GetMyProfileRequest, GetTavernRequest, GroupId, GroupSummary,
+    KickMemberRequest, KickMemberResponse, ListAuditRequest, ListAuditResponse, ListBansRequest,
+    ListBansResponse, ListCategoriesRequest, ListCategoriesResponse, ListGroupsRequest,
+    ListGroupsResponse, ListMembersRequest, ListMembersResponse, MemberInfo, ModAlert,
+    ProfileResponse, RemoveMembersRequest, RemoveMembersResponse, ReorderCategoriesRequest,
+    ReorderCategoriesResponse, ReorderChannelsRequest, ReorderChannelsResponse, Severity,
+    TavernInfo, UnbanMemberRequest, UnbanMemberResponse, UpdateProfileRequest, UpdateTavernRequest,
+    UserId,
 };
 use accord_types::perms::Permissions;
 use tonic::{Request, Response, Status};
@@ -120,8 +121,7 @@ impl GroupSvc {
         reason: &str,
         severity: Severity,
     ) {
-        let mask =
-            (Permissions::ADMINISTRATOR.bits() | Permissions::MANAGE_SERVER.bits()) as i64;
+        let mask = (Permissions::ADMINISTRATOR.bits() | Permissions::MANAGE_SERVER.bits()) as i64;
         let Ok(devices) = self.store.admin_device_ids(mask).await else {
             return;
         };
@@ -303,7 +303,9 @@ impl GroupService for GroupSvc {
             }
             // A banned account cannot (re)join channels.
             if self.store.is_banned(uid).await? {
-                return Err(Status::failed_precondition("user is banned from this server"));
+                return Err(Status::failed_precondition(
+                    "user is banned from this server",
+                ));
             }
             self.store.add_member(group_id, uid, "member").await?;
         }
@@ -507,8 +509,14 @@ impl GroupService for GroupSvc {
             authz::require(self.store.as_ref(), caller, Permissions::KICK_MEMBERS).await?;
             // Role hierarchy: you can only kick members you outrank.
             authz::require_outranks(self.store.as_ref(), caller, target).await?;
-            self.guard(caller, ActionClass::KickMember, &target.to_string(), None, &[])
-                .await?;
+            self.guard(
+                caller,
+                ActionClass::KickMember,
+                &target.to_string(),
+                None,
+                &[],
+            )
+            .await?;
         }
         self.store.remove_member(group_id, target).await?;
         tracing::info!(%group_id, %target, "kicked member");
@@ -530,8 +538,14 @@ impl GroupService for GroupSvc {
         }
         // Role hierarchy: you can only ban members you outrank.
         authz::require_outranks(self.store.as_ref(), caller, target).await?;
-        self.guard(caller, ActionClass::BanMember, &target.to_string(), None, &[])
-            .await?;
+        self.guard(
+            caller,
+            ActionClass::BanMember,
+            &target.to_string(),
+            None,
+            &[],
+        )
+        .await?;
 
         // Remove the banned account from every channel, then record the ban. The
         // cryptographic ban-tag (BAN-PLAN.md Layer 2) layers on later; this is the
@@ -666,8 +680,14 @@ impl GroupService for GroupSvc {
         let caller = parse_uuid(&claims.sub)?;
         authz::require(self.store.as_ref(), caller, Permissions::MANAGE_CHANNELS).await?;
         let id = parse_uuid(&request.into_inner().id)?;
-        self.guard(caller, ActionClass::DeleteChannel, &id.to_string(), None, &[])
-            .await?;
+        self.guard(
+            caller,
+            ActionClass::DeleteChannel,
+            &id.to_string(),
+            None,
+            &[],
+        )
+        .await?;
         self.store.delete_category(id).await?;
         Ok(Response::new(DeleteCategoryResponse {}))
     }
@@ -702,7 +722,9 @@ impl GroupService for GroupSvc {
             .iter()
             .map(|s| parse_uuid(s))
             .collect::<Result<_, _>>()?;
-        self.store.reorder_channels(req.category_id.trim(), &ids).await?;
+        self.store
+            .reorder_channels(req.category_id.trim(), &ids)
+            .await?;
         Ok(Response::new(ReorderChannelsResponse {}))
     }
 
@@ -735,7 +757,9 @@ impl GroupService for GroupSvc {
         if name.is_empty() {
             return Err(ServerError::InvalidArgument("display name is required".into()).into());
         }
-        self.store.update_profile(caller, name, req.avatar_url.trim()).await?;
+        self.store
+            .update_profile(caller, name, req.avatar_url.trim())
+            .await?;
         let (username, display_name, avatar_url) = self
             .store
             .user_profile(caller)

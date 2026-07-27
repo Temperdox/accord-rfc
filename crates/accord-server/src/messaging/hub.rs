@@ -21,7 +21,8 @@ use std::sync::Mutex;
 use accord_proto::server_message::Payload;
 use accord_proto::{
     DeviceId, GroupId, IncomingPrivateMessage, IncomingPublicMessage, MessageId,
-    MlsCommitNotification, MlsWelcomeNotification, ModAlert, ServerMessage, UserId, VoiceParticipant,
+    MlsCommitNotification, MlsWelcomeNotification, ModAlert, ServerMessage, UserId,
+    VoiceParticipant,
 };
 use futures::StreamExt;
 use redis::AsyncCommands;
@@ -341,7 +342,10 @@ impl Hub {
         }
         // A disconnect leaves any voice channels the device was in; notify peers.
         for (group, state) in self.voice_drop_device(device) {
-            self.publish_voice_participant(group, voice_participant_msg(group, device, &state, false));
+            self.publish_voice_participant(
+                group,
+                voice_participant_msg(group, device, &state, false),
+            );
         }
     }
 
@@ -395,7 +399,12 @@ impl Hub {
 
     /// Record/refresh a device's voice state in a channel and return the full
     /// participant list afterwards (so the caller can burst it to the newcomer).
-    pub fn voice_join(&self, group: Uuid, device: Uuid, state: VoiceState) -> Vec<(Uuid, VoiceState)> {
+    pub fn voice_join(
+        &self,
+        group: Uuid,
+        device: Uuid,
+        state: VoiceState,
+    ) -> Vec<(Uuid, VoiceState)> {
         let mut voice = self.voice.lock().expect("hub voice poisoned");
         let members = voice.entry(group).or_default();
         members.insert(device, state);

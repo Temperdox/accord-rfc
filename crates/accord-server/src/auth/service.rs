@@ -89,7 +89,11 @@ impl AuthSvc {
     /// the walking-skeleton `#general` auto-join, mint the access + refresh
     /// tokens, and build the [`LoginResponse`]. Shared by password login and
     /// key login so both paths behave identically once the caller is verified.
-    async fn issue_session(&self, user: &UserRow, device_name: &str) -> ServerResult<LoginResponse> {
+    async fn issue_session(
+        &self,
+        user: &UserRow,
+        device_name: &str,
+    ) -> ServerResult<LoginResponse> {
         let device_name = if device_name.trim().is_empty() {
             "Unknown device"
         } else {
@@ -105,7 +109,11 @@ impl AuthSvc {
         // Ensure non-guest accounts land in the default `#general` channel.
         if !user.is_guest {
             if let Ok(default_channel) = Uuid::parse_str(crate::groups::DEFAULT_PUBLIC_CHANNEL_ID) {
-                if let Err(e) = self.store.add_member(default_channel, user.id, "member").await {
+                if let Err(e) = self
+                    .store
+                    .add_member(default_channel, user.id, "member")
+                    .await
+                {
                     tracing::warn!(error = %e, "could not auto-join #general");
                 }
             }
@@ -312,12 +320,15 @@ impl AuthService for AuthSvc {
     ) -> Result<Response<ChallengeResponse>, Status> {
         let req = request.into_inner();
         if req.identity_pubkey.len() != 32 {
-            return Err(ServerError::InvalidArgument("identity key must be 32 bytes".into()).into());
+            return Err(
+                ServerError::InvalidArgument("identity key must be 32 bytes".into()).into(),
+            );
         }
         // Bind the challenge to this key + a fresh nonce; the client signs it.
-        let challenge = self
-            .jwt
-            .issue_challenge(&hex_encode(&req.identity_pubkey), &Uuid::now_v7().to_string())?;
+        let challenge = self.jwt.issue_challenge(
+            &hex_encode(&req.identity_pubkey),
+            &Uuid::now_v7().to_string(),
+        )?;
         Ok(Response::new(ChallengeResponse { challenge }))
     }
 
@@ -327,11 +338,10 @@ impl AuthService for AuthSvc {
     ) -> Result<Response<LoginResponse>, Status> {
         let req = request.into_inner();
 
-        let pk_bytes: [u8; 32] = req
-            .identity_pubkey
-            .as_slice()
-            .try_into()
-            .map_err(|_| ServerError::InvalidArgument("identity key must be 32 bytes".into()))?;
+        let pk_bytes: [u8; 32] =
+            req.identity_pubkey.as_slice().try_into().map_err(|_| {
+                ServerError::InvalidArgument("identity key must be 32 bytes".into())
+            })?;
         let sig_bytes: [u8; 64] = req
             .signature
             .as_slice()
@@ -517,6 +527,8 @@ mod tests {
         assert!(is_loopback("::ffff:127.0.0.1".parse::<IpAddr>().unwrap()));
         // Non-loopback stays non-loopback.
         assert!(!is_loopback("192.168.1.5".parse::<IpAddr>().unwrap()));
-        assert!(!is_loopback("::ffff:192.168.1.5".parse::<IpAddr>().unwrap()));
+        assert!(!is_loopback(
+            "::ffff:192.168.1.5".parse::<IpAddr>().unwrap()
+        ));
     }
 }

@@ -110,7 +110,9 @@ fn first_free_port(taken: &HashSet<u16>, is_free: impl Fn(u16) -> bool) -> Optio
 fn port_is_free(port: u16) -> bool {
     std::net::TcpListener::bind(SocketAddr::from((Ipv4Addr::LOCALHOST, port))).is_ok()
         && std::net::TcpListener::bind(
-            format!("[::]:{port}").parse::<SocketAddr>().expect("valid addr"),
+            format!("[::]:{port}")
+                .parse::<SocketAddr>()
+                .expect("valid addr"),
         )
         .is_ok()
 }
@@ -211,8 +213,8 @@ pub async fn create_tavern(
     // Ports already taken: running instances + everything persisted.
     let mut taken: HashSet<u16> = guard.running.values().map(|r| r.port).collect();
     taken.extend(metas.iter().map(|m| m.port));
-    let port = first_free_port(&taken, port_is_free)
-        .ok_or("no free port available for a new tavern")?;
+    let port =
+        first_free_port(&taken, port_is_free).ok_or("no free port available for a new tavern")?;
 
     let meta = TavernMeta {
         id: Uuid::now_v7().to_string(),
@@ -313,7 +315,9 @@ mod tests {
 
     #[test]
     fn picks_first_free_port_skipping_taken() {
-        let taken: HashSet<u16> = [FIRST_TAVERN_PORT, FIRST_TAVERN_PORT + 1].into_iter().collect();
+        let taken: HashSet<u16> = [FIRST_TAVERN_PORT, FIRST_TAVERN_PORT + 1]
+            .into_iter()
+            .collect();
         // Everything "free" at the OS level: should skip the two taken ports.
         let picked = first_free_port(&taken, |_| true);
         assert_eq!(picked, Some(FIRST_TAVERN_PORT + 2));

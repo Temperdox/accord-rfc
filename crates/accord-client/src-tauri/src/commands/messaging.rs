@@ -16,8 +16,8 @@ use accord_proto::messaging_service_client::MessagingServiceClient;
 use accord_proto::role_service_client::RoleServiceClient;
 use accord_proto::server_message::Payload as ServerPayload;
 use accord_proto::{
-    AssignRoleRequest, BanMemberRequest, ClientMessage, CreatePublicGroupRequest,
-    CreateCategoryRequest, CreateRoleRequest, DeleteCategoryRequest, DeleteGroupRequest,
+    AssignRoleRequest, BanMemberRequest, ClientMessage, CreateCategoryRequest,
+    CreatePublicGroupRequest, CreateRoleRequest, DeleteCategoryRequest, DeleteGroupRequest,
     DeleteRoleRequest, FetchHistoryRequest, GetMyPermissionsRequest, GetMyProfileRequest,
     GetTavernRequest, GroupId, KickMemberRequest, ListAuditRequest, ListBansRequest,
     ListCategoriesRequest, ListGroupsRequest, ListMembersRequest, ListRolesRequest, MessageId,
@@ -525,7 +525,10 @@ pub async fn create_category(
 ) -> Result<CategoryDto, String> {
     let (channel, token) = require_session(&state).await?;
     let c = GroupServiceClient::new(channel)
-        .create_category(authed(Request::new(CreateCategoryRequest { name }), &token)?)
+        .create_category(authed(
+            Request::new(CreateCategoryRequest { name }),
+            &token,
+        )?)
         .await
         .map_err(status_to_string)?
         .into_inner();
@@ -555,7 +558,10 @@ pub async fn reorder_categories(
 ) -> Result<(), String> {
     let (channel, token) = require_session(&state).await?;
     GroupServiceClient::new(channel)
-        .reorder_categories(authed(Request::new(ReorderCategoriesRequest { category_ids }), &token)?)
+        .reorder_categories(authed(
+            Request::new(ReorderCategoriesRequest { category_ids }),
+            &token,
+        )?)
         .await
         .map_err(status_to_string)?;
     Ok(())
@@ -572,7 +578,10 @@ pub async fn reorder_channels(
     let (channel, token) = require_session(&state).await?;
     GroupServiceClient::new(channel)
         .reorder_channels(authed(
-            Request::new(ReorderChannelsRequest { category_id, group_ids }),
+            Request::new(ReorderChannelsRequest {
+                category_id,
+                group_ids,
+            }),
             &token,
         )?)
         .await
@@ -582,7 +591,10 @@ pub async fn reorder_channels(
 
 /// Delete a public channel (gated by MANAGE_CHANNELS + guardrails).
 #[tauri::command]
-pub async fn delete_channel(state: State<'_, SharedSessions>, group_id: String) -> Result<(), String> {
+pub async fn delete_channel(
+    state: State<'_, SharedSessions>,
+    group_id: String,
+) -> Result<(), String> {
     let (channel, token) = require_session(&state).await?;
     GroupServiceClient::new(channel)
         .delete_group(authed(
@@ -654,7 +666,10 @@ pub async fn update_profile(
     let (channel, token) = require_session(&state).await?;
     let p = GroupServiceClient::new(channel)
         .update_profile(authed(
-            Request::new(UpdateProfileRequest { display_name, avatar_url }),
+            Request::new(UpdateProfileRequest {
+                display_name,
+                avatar_url,
+            }),
             &token,
         )?)
         .await
@@ -796,7 +811,10 @@ pub async fn reorder_roles(
 ) -> Result<(), String> {
     let (channel, token) = require_session(&state).await?;
     RoleServiceClient::new(channel)
-        .reorder_roles(authed(Request::new(ReorderRolesRequest { role_ids }), &token)?)
+        .reorder_roles(authed(
+            Request::new(ReorderRolesRequest { role_ids }),
+            &token,
+        )?)
         .await
         .map_err(status_to_string)?;
     Ok(())

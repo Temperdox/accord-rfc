@@ -92,14 +92,17 @@ async fn client_taverns_roundtrip() {
     // Create a text and a voice channel (the commands' create_channel maps to this).
     for (name, kind) in [("general", "text"), ("Lounge", "voice")] {
         groups
-            .create_public_group(authed(
-                Request::new(CreatePublicGroupRequest {
-                    name: name.into(),
-                    description: String::new(),
-                    channel_kind: kind.into(),
-                }),
-                &token,
-            ).expect("auth"))
+            .create_public_group(
+                authed(
+                    Request::new(CreatePublicGroupRequest {
+                        name: name.into(),
+                        description: String::new(),
+                        channel_kind: kind.into(),
+                    }),
+                    &token,
+                )
+                .expect("auth"),
+            )
             .await
             .expect("create channel");
     }
@@ -112,19 +115,36 @@ async fn client_taverns_roundtrip() {
         .into_inner()
         .groups;
     let dtos: Vec<GroupDto> = listed.into_iter().map(GroupDto::from_summary).collect();
-    let lounge = dtos.iter().find(|g| g.name == "Lounge").expect("voice channel listed");
-    assert_eq!(lounge.channel_kind, "voice", "voice channel_kind via client DTO");
-    let general = dtos.iter().find(|g| g.name == "general").expect("text channel listed");
-    assert_eq!(general.channel_kind, "text", "text channel_kind via client DTO");
+    let lounge = dtos
+        .iter()
+        .find(|g| g.name == "Lounge")
+        .expect("voice channel listed");
+    assert_eq!(
+        lounge.channel_kind, "voice",
+        "voice channel_kind via client DTO"
+    );
+    let general = dtos
+        .iter()
+        .find(|g| g.name == "general")
+        .expect("text channel listed");
+    assert_eq!(
+        general.channel_kind, "text",
+        "text channel_kind via client DTO"
+    );
 
     // ListMembers shows the owner.
     let members = groups
-        .list_members(authed(
-            Request::new(ListMembersRequest {
-                group_id: Some(GroupId { value: general.id.clone() }),
-            }),
-            &token,
-        ).expect("auth"))
+        .list_members(
+            authed(
+                Request::new(ListMembersRequest {
+                    group_id: Some(GroupId {
+                        value: general.id.clone(),
+                    }),
+                }),
+                &token,
+            )
+            .expect("auth"),
+        )
         .await
         .expect("members")
         .into_inner()
@@ -133,14 +153,17 @@ async fn client_taverns_roundtrip() {
 
     // Tavern identity update/get round-trips.
     groups
-        .update_tavern(authed(
-            Request::new(UpdateTavernRequest {
-                name: "Client IT Tavern".into(),
-                icon_url: String::new(),
-                description: String::new(),
-            }),
-            &token,
-        ).expect("auth"))
+        .update_tavern(
+            authed(
+                Request::new(UpdateTavernRequest {
+                    name: "Client IT Tavern".into(),
+                    icon_url: String::new(),
+                    description: String::new(),
+                }),
+                &token,
+            )
+            .expect("auth"),
+        )
         .await
         .expect("update tavern");
     let tavern = groups

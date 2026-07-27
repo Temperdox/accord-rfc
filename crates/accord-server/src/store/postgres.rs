@@ -140,10 +140,7 @@ impl Store for PostgresStore {
         .await?)
     }
 
-    async fn find_user_by_identity(
-        &self,
-        identity_pubkey: &[u8],
-    ) -> ServerResult<Option<UserRow>> {
+    async fn find_user_by_identity(&self, identity_pubkey: &[u8]) -> ServerResult<Option<UserRow>> {
         Ok(sqlx::query_as::<_, UserRow>(
             "SELECT id, username, display_name, password_hash, is_guest \
              FROM users WHERE identity_key = $1",
@@ -161,10 +158,7 @@ impl Store for PostgresStore {
         Ok(row.is_some_and(|(g,)| g))
     }
 
-    async fn user_profile(
-        &self,
-        user_id: Uuid,
-    ) -> ServerResult<Option<(String, String, String)>> {
+    async fn user_profile(&self, user_id: Uuid) -> ServerResult<Option<(String, String, String)>> {
         let row: Option<(String, String, String)> =
             sqlx::query_as("SELECT username, display_name, avatar_url FROM users WHERE id = $1")
                 .bind(user_id)
@@ -248,10 +242,9 @@ impl Store for PostgresStore {
 
     async fn create_role(&self, write: &RoleWrite) -> ServerResult<Uuid> {
         let id = Uuid::now_v7();
-        let (max_pos,): (i32,) =
-            sqlx::query_as("SELECT COALESCE(MAX(position), 0) FROM roles")
-                .fetch_one(&self.pool)
-                .await?;
+        let (max_pos,): (i32,) = sqlx::query_as("SELECT COALESCE(MAX(position), 0) FROM roles")
+            .fetch_one(&self.pool)
+            .await?;
         sqlx::query(
             "INSERT INTO roles (id, name, permissions, position, color, icon, hoist, mentionable)
              VALUES ($1, $2, $3, $4, $5, $6, $7, $8)",
@@ -566,12 +559,11 @@ impl Store for PostgresStore {
         category_id: &str,
     ) -> ServerResult<Uuid> {
         let id = Uuid::now_v7();
-        let (max_pos,): (i32,) = sqlx::query_as(
-            "SELECT COALESCE(MAX(position), -1) FROM groups WHERE category_id = $1",
-        )
-        .bind(category_id)
-        .fetch_one(&self.pool)
-        .await?;
+        let (max_pos,): (i32,) =
+            sqlx::query_as("SELECT COALESCE(MAX(position), -1) FROM groups WHERE category_id = $1")
+                .bind(category_id)
+                .fetch_one(&self.pool)
+                .await?;
         sqlx::query(
             "INSERT INTO groups (id, name, description, kind, channel_kind, category_id, position)
              VALUES ($1, $2, $3, 'public', $4, $5, $6)",
@@ -688,7 +680,10 @@ impl Store for PostgresStore {
         }
         let text_id = Uuid::now_v7();
         let voice_id = Uuid::now_v7();
-        for (id, name, pos) in [(text_id, "Text Channels", 0), (voice_id, "Voice Channels", 1)] {
+        for (id, name, pos) in [
+            (text_id, "Text Channels", 0),
+            (voice_id, "Voice Channels", 1),
+        ] {
             sqlx::query("INSERT INTO categories (id, name, position) VALUES ($1, $2, $3)")
                 .bind(id)
                 .bind(name)
@@ -797,12 +792,11 @@ impl Store for PostgresStore {
     }
 
     async fn device_ids_for_user(&self, user_id: Uuid) -> ServerResult<Vec<Uuid>> {
-        let rows: Vec<(Uuid,)> = sqlx::query_as(
-            "SELECT id FROM devices WHERE user_id = $1 AND revoked_at IS NULL",
-        )
-        .bind(user_id)
-        .fetch_all(&self.pool)
-        .await?;
+        let rows: Vec<(Uuid,)> =
+            sqlx::query_as("SELECT id FROM devices WHERE user_id = $1 AND revoked_at IS NULL")
+                .bind(user_id)
+                .fetch_all(&self.pool)
+                .await?;
         Ok(rows.into_iter().map(|(id,)| id).collect())
     }
 
@@ -818,13 +812,15 @@ impl Store for PostgresStore {
         .await?;
         Ok(rows
             .into_iter()
-            .map(|(user_id, username, display_name, is_owner, avatar_url)| MemberRow {
-                user_id,
-                username,
-                display_name,
-                is_owner,
-                avatar_url,
-            })
+            .map(
+                |(user_id, username, display_name, is_owner, avatar_url)| MemberRow {
+                    user_id,
+                    username,
+                    display_name,
+                    is_owner,
+                    avatar_url,
+                },
+            )
             .collect())
     }
 

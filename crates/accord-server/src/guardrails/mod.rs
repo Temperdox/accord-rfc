@@ -102,7 +102,10 @@ pub enum GuardrailDecision {
     /// Proceed, but the action is suspicious - record + alert admins.
     AllowFlagged { reason: String },
     /// Rate-limited; retry after roughly this many seconds.
-    Throttle { retry_after_secs: u64, reason: String },
+    Throttle {
+        retry_after_secs: u64,
+        reason: String,
+    },
     /// Refused outright.
     Deny { reason: String },
 }
@@ -111,7 +114,10 @@ impl GuardrailDecision {
     /// Whether the caller should still perform the action.
     #[must_use]
     pub fn allowed(&self) -> bool {
-        matches!(self, GuardrailDecision::Allow | GuardrailDecision::AllowFlagged { .. })
+        matches!(
+            self,
+            GuardrailDecision::Allow | GuardrailDecision::AllowFlagged { .. }
+        )
     }
 
     /// Whether this decision warrants an audit row + `ModAlert`.
@@ -207,7 +213,12 @@ impl Guardrails {
     /// Evaluate an action. Pure in-memory; the caller maps the decision onto a
     /// gRPC status and (when notable) records the audit row + emits a `ModAlert`.
     #[must_use]
-    pub fn check(&self, actor: Uuid, action: ActionClass, ctx: &ActionContext) -> GuardrailDecision {
+    pub fn check(
+        &self,
+        actor: Uuid,
+        action: ActionClass,
+        ctx: &ActionContext,
+    ) -> GuardrailDecision {
         self.check_at(actor, action, ctx, Instant::now())
     }
 
