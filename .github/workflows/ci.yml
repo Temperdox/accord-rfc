@@ -1,15 +1,25 @@
 name: CI
 
-# Fast checks on every push/PR. Excludes the Tauri client (heavy GUI build);
-# the release workflow covers building the client itself.
+# Checks on every push/PR.
+#
+# The `client` job exists because the desktop client is where platform-specific
+# breakage hides: its media stack (cpal/WASAPI, WebKitGTK) and its webview glue
+# are compiled per OS, so a change that is clean on Linux can fail to build on
+# Windows and vice versa. Until this job existed the client was only ever built
+# by the release workflow - on a version tag, long after the offending commit.
 
 on:
   push:
     branches: [main, master]
   pull_request:
 
+# Nothing here writes to the repo; checkout only needs to read it.
+permissions:
+  contents: read
+
 jobs:
-  test:
+  workspace:
+    name: workspace (server + libs)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -24,3 +34,69 @@ jobs:
         run: cargo fmt --all --check
       - name: Test (workspace, excluding the desktop client)
         run: cargo test --workspace --exclude accord-client
+
+  client:
+    name: client (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      # One OS failing should still report the other, since the whole point is
+      # telling platform-specific breakage apart from a general one.
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    env:
+      # build.rs embeds a requireAdministrator manifest into every Windows
+      # executable, test binaries included, and those then refuse to start from
+      # the runner's non-elevated shell. The client's tests need no privileges,
+      # so CI uses the documented opt-out. Release builds never set this.
+      ACCORD_NO_ELEVATION_MANIFEST: "1"
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Install Linux build dependencies (Tauri v2)
+        if: matrix.os == 'ubuntu-latest'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev \
+            build-essential curl wget file \
+            libxdo-dev libssl-dev \
+            libayatana-appindicator3-dev \
+            librsvg2-dev
+
+      - uses: dtolnay/rust-toolchain@2c7215f132e9ebf062739d9130488b56d53c060c # stable
+        with:
+          toolchain: stable
+
+      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+        with:
+          workspaces: ". -> target"
+          # Separate caches per OS; the artefacts are not interchangeable.
+          key: ${{ matrix.os }}
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: crates/accord-client/package-lock.json
+
+      - name: Install frontend dependencies
+        working-directory: crates/accord-client
+        run: npm ci --ignore-scripts
+
+      - name: Type-check the frontend
+        working-directory: crates/accord-client
+        run: npx tsc --noEmit
+
+      # tauri-build resolves frontendDist (../dist) while compiling the crate,
+      # so the frontend has to be built before the Rust build, not after.
+      - name: Build the frontend
+        working-directory: crates/accord-client
+        run: npm run build
+
+      # Windows additionally needs CMake and a C compiler here: opus is built
+      # from vendored C source. Both ship on the windows-latest runner image.
+      - name: Test the client
+        run: cargo test -p accord-client
