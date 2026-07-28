@@ -24,6 +24,12 @@ export interface AppNotification {
   /** Optional inline action button. */
   actionLabel?: string;
   onAction?: () => void;
+  /** Called when the USER dismisses this with ×, so a notification can undo
+   * something it started (an incoming call stops ringing when waved away).
+   * Deliberately not fired when a same-key notify replaces this one, nor by
+   * `dismissKey` - those are the code's own bookkeeping, and firing there would
+   * let a refresh of a still-valid notification cancel its own side effect. */
+  onDismiss?: () => void;
   /** Whether the × dismiss button shows (default true). */
   dismissible?: boolean;
 }
@@ -53,8 +59,11 @@ export function notifyTransient(n: Omit<AppNotification, "id">, ms = 5000): numb
   return id;
 }
 
-/** Remove a notification by id. */
+/** Remove a notification by id (the user pressing ×). */
 export function dismiss(id: number): void {
+  items()
+    .find((p) => p.id === id)
+    ?.onDismiss?.();
   setItems((prev) => prev.filter((p) => p.id !== id));
 }
 

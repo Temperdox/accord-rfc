@@ -914,6 +914,26 @@ export const listAudioDevices = (): Promise<{
   outputs: AudioDevice[];
 }> => invoke("list_audio_devices");
 
+/** A selectable incoming-call sound. Bundled at build time from
+ * `src-tauri/assets/ringtones/`; `id` is what prefs persist. */
+export interface RingtoneInfo {
+  id: string;
+  name: string;
+}
+
+/** Ringtones available to choose from. */
+export const listRingtones = (): Promise<RingtoneInfo[]> => invoke("list_ringtones");
+
+/** Start ringing for an incoming call. */
+export const startRingtone = (): Promise<void> => invoke("start_ringtone");
+
+/** Stop ringing (answered, declined, or the caller gave up). */
+export const stopRingtone = (): Promise<void> => invoke("stop_ringtone");
+
+/** Play a ringtone once, to hear it while choosing. */
+export const previewRingtone = (id: string): Promise<void> =>
+  invoke("preview_ringtone", { id });
+
 /** Start metering the mic for the settings Mic Test (transmits nothing). */
 export const startMicTest = (): Promise<void> => invoke("start_mic_test");
 

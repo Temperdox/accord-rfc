@@ -17,7 +17,7 @@ use tauri::State;
 use tokio::sync::mpsc;
 
 use crate::state::SharedSessions;
-use crate::voice_engine::{AudioDevices, VoiceEngine, VoicePrefs};
+use crate::voice_engine::{AudioDevices, RingtoneInfo, VoiceEngine, VoicePrefs};
 
 /// The outbound `MessageStream` sender for a specific server, or an error.
 async fn outbound(
@@ -123,6 +123,32 @@ pub async fn set_voice_prefs(
 #[tauri::command]
 pub fn list_audio_devices() -> AudioDevices {
     VoiceEngine::devices()
+}
+
+/// The ringtones offered in settings (built-in plus everything bundled from
+/// `assets/ringtones/`).
+#[tauri::command]
+pub fn list_ringtones() -> Vec<RingtoneInfo> {
+    VoiceEngine::ringtones()
+}
+
+/// Start ringing for an incoming call.
+#[tauri::command]
+pub async fn start_ringtone(engine: State<'_, VoiceEngine>) -> Result<(), String> {
+    engine.start_ring().await
+}
+
+/// Stop ringing (answered, declined, or the caller gave up).
+#[tauri::command]
+pub async fn stop_ringtone(engine: State<'_, VoiceEngine>) -> Result<(), String> {
+    engine.stop_ring().await;
+    Ok(())
+}
+
+/// Play a ringtone once so the user can hear it while choosing.
+#[tauri::command]
+pub async fn preview_ringtone(engine: State<'_, VoiceEngine>, id: String) -> Result<(), String> {
+    engine.preview_ring(&id).await
 }
 
 /// Start metering the microphone for the settings Mic Test (transmits nothing).

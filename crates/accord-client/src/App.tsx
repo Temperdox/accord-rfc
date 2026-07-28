@@ -57,7 +57,7 @@ import type { GroupDto } from "./api";
 import * as voice from "./voice";
 import * as voicePrefsMod from "./voicePrefs";
 import NotificationBar from "./NotificationBar";
-import { dismissKey, notify, notifyTransient } from "./notifications";
+import { dismissKey, notifications, notify, notifyTransient } from "./notifications";
 
 /** A server the user is signed in to (their home, or one they joined). */
 interface ServerSession {
@@ -407,6 +407,7 @@ function Home(props: { home: ServerSession }) {
   );
   const [audioInputs, setAudioInputs] = createSignal<api.AudioDevice[]>([]);
   const [audioOutputs, setAudioOutputs] = createSignal<api.AudioDevice[]>([]);
+  const [ringtones, setRingtones] = createSignal<api.RingtoneInfo[]>([]);
   // Mic test (loopback + meter): the running test's stop fn + its live level.
   const [micTestLevel, setMicTestLevel] = createSignal(0);
   let micTestStop: (() => void) | null = null;
@@ -441,12 +442,14 @@ function Home(props: { home: ServerSession }) {
     void voice.setAudioPrefs(next);
   }
   /** Enumerate audio devices from the native engine (the webview's
-   * `enumerateDevices` describes devices the media stack no longer uses). */
+   * `enumerateDevices` describes devices the media stack no longer uses), plus
+   * the ringtones bundled into this build. */
   async function loadAudioDevices() {
     try {
-      const devs = await api.listAudioDevices();
+      const [devs, tones] = await Promise.all([api.listAudioDevices(), api.listRingtones()]);
       setAudioInputs(devs.inputs);
       setAudioOutputs(devs.outputs);
+      setRingtones(tones);
     } catch (e) {
       setError(String(e));
     }
@@ -940,6 +943,12 @@ function Home(props: { home: ServerSession }) {
    * this event race. One refresh settles it - without that the first call
    * anyone places would ring nowhere. */
   async function ringIncomingCall(p: api.VoiceParticipant) {
+    const key = `incoming-call-${p.groupId}`;
+    // Already ringing for this call. A caller who mutes or turns their camera
+    // on republishes their state, and restarting the ringtone from the top on
+    // every such event would stutter.
+    if (notifications().some((n) => n.key === key)) return;
+
     let conv = dmConversations().find((d) => d.groupId === p.groupId);
     if (!conv) {
       await refreshDms();
@@ -949,7 +958,9 @@ function Home(props: { home: ServerSession }) {
     // channel list, so a banner would be noise.
     if (!conv) return;
     const target = conv;
-    const key = `incoming-call-${p.groupId}`;
+    void api.startRingtone().catch(() => {
+      /* no speakers: the banner alone still announces the call */
+    });
     notify({
       key,
       severity: "info",
@@ -957,8 +968,11 @@ function Home(props: { home: ServerSession }) {
       actionLabel: "Join call",
       onAction: () => {
         dismissKey(key);
+        void api.stopRingtone();
         void openConversation(target).then(() => joinVoiceChannel(target.groupId));
       },
+      // Dismissing the banner declines the call, so it must silence the ring.
+      onDismiss: () => void api.stopRingtone(),
     });
   }
 
@@ -1246,7 +1260,11 @@ function Home(props: { home: ServerSession }) {
         if (p.joined && p.deviceId !== myDeviceId() && p.groupId !== activeVoice()) {
           void ringIncomingCall(p);
         }
-        if (!p.joined) dismissKey(`incoming-call-${p.groupId}`);
+        // The caller gave up (or left): stop ringing and clear the banner.
+        if (!p.joined) {
+          dismissKey(`incoming-call-${p.groupId}`);
+          void api.stopRingtone();
+        }
 
         if (p.serverId !== activeServerId()) return;
         setVoiceParticipants((prev) => {
@@ -3998,6 +4016,37 @@ function Home(props: { home: ServerSession }) {
                       <p class="field-help">
                         Devices come from the system audio stack. Changing one applies to your
                         next call.
+                      </p>
+                    </div>
+
+                    <div class="field">
+                      <label class="field-label" for="ringtone">Incoming call sound</label>
+                      <div class="field-row">
+                        <select
+                          id="ringtone"
+                          value={voicePrefs().ringtoneId}
+                          onChange={(e) => {
+                            updateVoicePrefs({ ringtoneId: e.currentTarget.value });
+                            void api.previewRingtone(e.currentTarget.value).catch(() => {});
+                          }}
+                        >
+                          <For each={ringtones()}>
+                            {(r) => <option value={r.id}>{r.name}</option>}
+                          </For>
+                        </select>
+                        <button
+                          onClick={() =>
+                            void api.previewRingtone(voicePrefs().ringtoneId).catch((e) =>
+                              setError(String(e))
+                            )
+                          }
+                        >
+                          Play
+                        </button>
+                      </div>
+                      <p class="field-help">
+                        Plays on your output device when a friend calls, until you answer or
+                        dismiss it.
                       </p>
                     </div>
 

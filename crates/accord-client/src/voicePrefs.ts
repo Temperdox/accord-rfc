@@ -19,6 +19,9 @@ export interface VoicePrefs {
   echoCancellation: boolean;
   /** Unused pending native input processing. */
   autoGain: boolean;
+  /** Which bundled ringtone announces an incoming call (id from
+   * `listRingtones`; "classic" is the always-present built-in). */
+  ringtoneId: string;
   /** Mic input gain sent to peers, percent (0-200; 100 = unchanged). */
   micGain: number;
   /** Playback volume for other people's audio, percent (0-200; 100 = unchanged). */
@@ -33,6 +36,7 @@ export const DEFAULT_VOICE_PREFS: VoicePrefs = {
   noiseSuppression: "rnnoise",
   echoCancellation: true,
   autoGain: true,
+  ringtoneId: "classic",
   micGain: 100,
   outputVolume: 100,
 };

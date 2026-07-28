@@ -53,6 +53,24 @@ webrtc = "0.17"
 cpal = "0.18"
 opus = "0.3"
 bytes = "1"
+# Decodes the bundled ringtones (assets/ringtones/*). Pure Rust, so dropping in
+# an .mp3 needs no system codec - which matters because the webview's media
+# stack is exactly what we cannot rely on here.
+symphonia = { version = "0.6", default-features = false, features = [
+    "mp3",
+    "wav",
+    "flac",
+    "ogg",
+    "vorbis",
+    "isomp4",
+    "aac",
+    "pcm",
+    # Real-world mp3s carry ID3 tags, often with cover art. Without a metadata
+    # reader to consume them the tag eats the 1 MB probe window and the file is
+    # rejected as "no suitable format reader".
+    "id3v2",
+    "id3v1",
+] }
 
 # Verbose logging to a file (captures client + embedded server + yggdrasil, which
 # all use `tracing`) so issues can be downloaded/inspected from the dev menu.

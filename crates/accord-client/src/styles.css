@@ -2816,6 +2816,21 @@ input[type="range"]::-webkit-slider-thumb {
   cursor: pointer;
 }
 
+/* ---- A settings field whose control sits beside a button ---- */
+.field-row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+}
+.field-row select {
+  flex: 1;
+  min-width: 0;
+}
+.field-row button {
+  flex: 0 0 auto;
+  width: auto;
+}
+
 /* ---- Mic test row + level meter ---- */
 .mic-test-row {
   display: flex;

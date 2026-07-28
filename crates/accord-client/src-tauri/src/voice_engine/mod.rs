@@ -21,6 +21,7 @@ pub mod audio;
 pub mod peer;
 #[cfg(test)]
 mod peer_it;
+pub mod ringtone;
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -35,8 +36,14 @@ use tokio::sync::{Mutex, broadcast};
 use crate::state::SharedSessions;
 use audio::{FRAME_SAMPLES, MicCapture, Playback, SAMPLE_RATE};
 use peer::{PeerLink, Signaler};
+use ringtone::Ringing;
 
 pub use audio::AudioDevices;
+pub use ringtone::RingtoneInfo;
+
+/// How long an unanswered call rings before it gives up, so a banner nobody
+/// notices does not ring the room out.
+const RING_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(40);
 
 /// Event carrying speaking levels to the UI (local mic + each peer device).
 const VOICE_LEVELS: &str = "voice-levels";
@@ -56,6 +63,10 @@ pub struct VoicePrefs {
     /// 0..=200, where 100 is unity.
     #[serde(default = "unity")]
     pub output_volume: f32,
+    /// Which bundled ringtone announces an incoming call. Empty or unknown
+    /// falls back to the built-in one.
+    #[serde(default)]
+    pub ringtone_id: String,
 }
 
 fn unity() -> f32 {
@@ -69,6 +80,7 @@ impl Default for VoicePrefs {
             speaker_device_id: String::new(),
             mic_gain: 100.0,
             output_volume: 100.0,
+            ringtone_id: ringtone::DEFAULT_ID.to_owned(),
         }
     }
 }
@@ -167,12 +179,19 @@ struct MicTest {
     task: JoinHandle<()>,
 }
 
+/// A ringtone currently sounding, plus the task that will stop it on timeout.
+struct ActiveRing {
+    _sound: Ringing,
+    timeout: JoinHandle<()>,
+}
+
 /// The managed voice engine. One call at a time, matching the UI.
 pub struct VoiceEngine {
     app: AppHandle,
     call: Mutex<Option<ActiveCall>>,
     test: Mutex<Option<MicTest>>,
     prefs: Mutex<VoicePrefs>,
+    ring: Mutex<Option<ActiveRing>>,
 }
 
 impl VoiceEngine {
@@ -183,6 +202,7 @@ impl VoiceEngine {
             call: Mutex::new(None),
             test: Mutex::new(None),
             prefs: Mutex::new(VoicePrefs::default()),
+            ring: Mutex::new(None),
         }
     }
 
@@ -190,6 +210,72 @@ impl VoiceEngine {
     #[must_use]
     pub fn devices() -> AudioDevices {
         audio::list_devices()
+    }
+
+    /// Ringtones the user can choose between.
+    #[must_use]
+    pub fn ringtones() -> Vec<RingtoneInfo> {
+        ringtone::list()
+    }
+
+    /// Start ringing for an incoming call, on the chosen output device and
+    /// ringtone. Idempotent: ringing again just restarts the sound.
+    ///
+    /// # Errors
+    /// Returns a message when the output device cannot be opened.
+    pub async fn start_ring(&self) -> Result<(), String> {
+        // Ringing into your own ear mid-call would be worse than silence; the
+        // banner still appears.
+        if self.call.lock().await.is_some() {
+            return Ok(());
+        }
+        self.stop_ring().await;
+        let prefs = self.prefs.lock().await.clone();
+        let id = if prefs.ringtone_id.is_empty() {
+            ringtone::DEFAULT_ID.to_owned()
+        } else {
+            prefs.ringtone_id.clone()
+        };
+        let sound = ringtone::start(&id, prefs.speaker(), prefs.output_volume / 100.0)?;
+
+        let app = self.app.clone();
+        let timeout = tauri::async_runtime::spawn(async move {
+            tokio::time::sleep(RING_TIMEOUT).await;
+            app.state::<VoiceEngine>().stop_ring().await;
+        });
+        *self.ring.lock().await = Some(ActiveRing {
+            _sound: sound,
+            timeout,
+        });
+        Ok(())
+    }
+
+    /// Stop ringing (answered, dismissed, the caller gave up, or timed out).
+    pub async fn stop_ring(&self) {
+        if let Some(ring) = self.ring.lock().await.take() {
+            ring.timeout.abort();
+        }
+    }
+
+    /// Play a ringtone once so the user can hear their choice in settings.
+    ///
+    /// # Errors
+    /// Returns a message when the output device cannot be opened.
+    pub async fn preview_ring(&self, id: &str) -> Result<(), String> {
+        self.stop_ring().await;
+        let prefs = self.prefs.lock().await.clone();
+        let sound = ringtone::start(id, prefs.speaker(), prefs.output_volume / 100.0)?;
+        let app = self.app.clone();
+        // A preview is a taste, not a ring: cut it off after one pass or so.
+        let timeout = tauri::async_runtime::spawn(async move {
+            tokio::time::sleep(std::time::Duration::from_secs(4)).await;
+            app.state::<VoiceEngine>().stop_ring().await;
+        });
+        *self.ring.lock().await = Some(ActiveRing {
+            _sound: sound,
+            timeout,
+        });
+        Ok(())
     }
 
     /// Apply preferences. Volume and gain take effect live; changing a device
@@ -220,6 +306,9 @@ impl VoiceEngine {
         if my_device.is_empty() {
             return Err("this session has no device id - reconnect and try again".to_owned());
         }
+        // Answering silences the ring, and it must stop before the speakers are
+        // reopened for the call.
+        self.stop_ring().await;
         self.leave().await;
         // The mic test holds the input device; a call takes priority.
         self.stop_mic_test().await;

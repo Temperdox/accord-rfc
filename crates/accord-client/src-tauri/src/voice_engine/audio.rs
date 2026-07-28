@@ -102,7 +102,7 @@ pub fn list_devices() -> AudioDevices {
 /// Resolve a saved device id, falling back to the host default when it is gone
 /// (unplugged headset, renamed sink). A missing device must degrade to "use the
 /// default", never to "no audio".
-fn pick_device(saved: Option<&str>, input: bool) -> Option<Device> {
+pub(super) fn pick_device(saved: Option<&str>, input: bool) -> Option<Device> {
     let host = cpal::default_host();
     if let Some(want) = saved.filter(|s| !s.is_empty()) {
         if let Ok(id) = DeviceId::from_str(want)
@@ -120,7 +120,7 @@ fn pick_device(saved: Option<&str>, input: bool) -> Option<Device> {
 }
 
 /// Choose a stream config, preferring 48 kHz (no resampling) and f32 samples.
-fn pick_config(device: &Device, input: bool) -> Result<SupportedStreamConfig, String> {
+pub(super) fn pick_config(device: &Device, input: bool) -> Result<SupportedStreamConfig, String> {
     let ranges: Vec<_> = if input {
         device
             .supported_input_configs()
@@ -155,7 +155,7 @@ fn pick_config(device: &Device, input: bool) -> Result<SupportedStreamConfig, St
 
 /// Linear resample of mono audio between `from` and `to` rates. Voice-grade and
 /// dependency-free; a device already at 48 kHz skips it entirely.
-fn resample(input: &[f32], from: u32, to: u32) -> Vec<f32> {
+pub(super) fn resample(input: &[f32], from: u32, to: u32) -> Vec<f32> {
     if from == to || input.is_empty() {
         return input.to_vec();
     }
