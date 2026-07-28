@@ -328,6 +328,56 @@ pub struct Playback {
     volume: Arc<Mutex<f32>>,
 }
 
+/// Turns the per-peer buffers into the single stream the speakers want. Lives
+/// apart from [`Playback::start`] so the audio callback reads as one call, and
+/// so the mixing rule can be reasoned about (and tested) on its own.
+struct Mixer {
+    peers: Arc<Mutex<HashMap<String, Vec<f32>>>>,
+    deafened: Arc<AtomicBool>,
+    volume: Arc<Mutex<f32>>,
+    /// The device's rate, which is not necessarily 48 kHz.
+    rate: u32,
+}
+
+impl Mixer {
+    /// How many 48 kHz samples are needed to produce `frames` at the device rate.
+    fn source_samples(&self, frames: usize) -> usize {
+        if self.rate == SAMPLE_RATE {
+            frames
+        } else {
+            ((frames as f64) * f64::from(SAMPLE_RATE) / f64::from(self.rate)).ceil() as usize
+        }
+    }
+
+    /// Produce `frames` mono samples at the device rate.
+    ///
+    /// Deafened mixes nothing but still drains the buffers, so un-deafening
+    /// resumes with live audio instead of replaying a backlog.
+    fn fill(&self, frames: usize) -> Vec<f32> {
+        let needed = self.source_samples(frames);
+        let silent = self.deafened.load(Ordering::Relaxed);
+        let mut mixed = vec![0.0f32; needed];
+        {
+            let mut peers = self.peers.lock().expect("playback buffers poisoned");
+            for buf in peers.values_mut() {
+                let take = buf.len().min(needed);
+                for (slot, sample) in mixed.iter_mut().zip(buf.drain(..take)) {
+                    if !silent {
+                        *slot += sample;
+                    }
+                }
+            }
+        }
+        let gain = *self.volume.lock().expect("playback volume poisoned");
+        resample(&mixed, SAMPLE_RATE, self.rate)
+            .into_iter()
+            // Several peers at once can exceed full scale; clamp rather than
+            // wrap, which would be audible as harsh distortion.
+            .map(|s| (s * gain).clamp(-1.0, 1.0))
+            .collect()
+    }
+}
+
 impl Playback {
     /// Open the speakers. An empty/unknown `device_id` means the OS default.
     ///
@@ -347,45 +397,18 @@ impl Playback {
         let volume = Arc::new(Mutex::new(volume));
         let err_fn = |e: cpal::Error| tracing::warn!(error = %e, "speaker stream error");
 
-        // Produce `frames` mono samples at the device rate by mixing every
-        // peer's queued audio; deafened means "mix nothing" (still draining, so
-        // un-deafening does not replay a backlog).
-        let mix = {
-            let (bufs, deaf, vol) = (peers.clone(), deafened.clone(), volume.clone());
-            move |frames: usize| -> Vec<f32> {
-                let needed = if rate == SAMPLE_RATE {
-                    frames
-                } else {
-                    ((frames as f64) * f64::from(SAMPLE_RATE) / f64::from(rate)).ceil() as usize
-                };
-                let silent = deaf.load(Ordering::Relaxed);
-                let mut mixed = vec![0.0f32; needed];
-                {
-                    let mut bufs = bufs.lock().expect("playback buffers poisoned");
-                    for buf in bufs.values_mut() {
-                        let take = buf.len().min(needed);
-                        for (slot, sample) in mixed.iter_mut().zip(buf.drain(..take)) {
-                            if !silent {
-                                *slot += sample;
-                            }
-                        }
-                    }
-                }
-                let g = *vol.lock().expect("playback volume poisoned");
-                resample(&mixed, SAMPLE_RATE, rate)
-                    .into_iter()
-                    // Several peers at once can exceed full scale; clamp rather
-                    // than wrap (which would be audible as harsh distortion).
-                    .map(|s| (s * g).clamp(-1.0, 1.0))
-                    .collect()
-            }
+        let mixer = Mixer {
+            peers: peers.clone(),
+            deafened: deafened.clone(),
+            volume: volume.clone(),
+            rate,
         };
 
         let stream = match format {
             SampleFormat::F32 => device.build_output_stream(
                 config,
                 move |out: &mut [f32], _: &cpal::OutputCallbackInfo| {
-                    let ready = mix(out.len() / channels);
+                    let ready = mixer.fill(out.len() / channels);
                     for (i, frame) in out.chunks_mut(channels).enumerate() {
                         frame.fill(ready.get(i).copied().unwrap_or(0.0));
                     }
@@ -396,7 +419,7 @@ impl Playback {
             SampleFormat::I16 => device.build_output_stream(
                 config,
                 move |out: &mut [i16], _: &cpal::OutputCallbackInfo| {
-                    let ready = mix(out.len() / channels);
+                    let ready = mixer.fill(out.len() / channels);
                     for (i, frame) in out.chunks_mut(channels).enumerate() {
                         let v = ready.get(i).copied().unwrap_or(0.0);
                         frame.fill((v * 32767.0) as i16);
@@ -520,5 +543,85 @@ mod tests {
     #[test]
     fn frame_is_twenty_milliseconds() {
         assert_eq!(FRAME_SAMPLES, 960, "Opus/WebRTC standard frame at 48 kHz");
+    }
+
+    /// A mixer wired to the given per-peer audio, at the device's rate.
+    fn mixer_with(peers: &[(&str, Vec<f32>)], rate: u32) -> Mixer {
+        Mixer {
+            peers: Arc::new(Mutex::new(
+                peers
+                    .iter()
+                    .map(|(id, buf)| ((*id).to_owned(), buf.clone()))
+                    .collect(),
+            )),
+            deafened: Arc::new(AtomicBool::new(false)),
+            volume: Arc::new(Mutex::new(1.0)),
+            rate: SAMPLE_RATE.min(rate).max(rate),
+        }
+    }
+
+    #[test]
+    fn mixing_sums_every_peer() {
+        let mixer = mixer_with(&[("a", vec![0.25; 4]), ("b", vec![0.5; 4])], SAMPLE_RATE);
+        assert_eq!(mixer.fill(4), vec![0.75; 4], "both peers are heard");
+    }
+
+    #[test]
+    fn mixing_clamps_instead_of_wrapping() {
+        // Four loud peers would sum past full scale; wrapping would be harsh
+        // distortion, so the result saturates.
+        let mixer = mixer_with(
+            &[
+                ("a", vec![0.8; 2]),
+                ("b", vec![0.8; 2]),
+                ("c", vec![0.8; 2]),
+                ("d", vec![0.8; 2]),
+            ],
+            SAMPLE_RATE,
+        );
+        assert_eq!(mixer.fill(2), vec![1.0; 2]);
+    }
+
+    #[test]
+    fn deafened_is_silent_but_still_drains() {
+        let mixer = mixer_with(&[("a", vec![0.5; 8])], SAMPLE_RATE);
+        mixer.deafened.store(true, Ordering::Relaxed);
+        assert_eq!(mixer.fill(4), vec![0.0; 4], "nothing is heard");
+        // The consumed audio is gone rather than queued: un-deafening has to
+        // resume live, not replay a backlog.
+        let left = mixer.peers.lock().expect("peers").get("a").unwrap().len();
+        assert_eq!(left, 4, "the deafened pass still consumed its samples");
+    }
+
+    #[test]
+    fn a_silent_peer_list_produces_silence_not_a_panic() {
+        let mixer = mixer_with(&[], SAMPLE_RATE);
+        assert_eq!(mixer.fill(3), vec![0.0; 3]);
+    }
+
+    #[test]
+    fn volume_scales_the_mix() {
+        let mixer = mixer_with(&[("a", vec![0.5; 4])], SAMPLE_RATE);
+        *mixer.volume.lock().expect("volume") = 0.5;
+        assert_eq!(mixer.fill(4), vec![0.25; 4]);
+    }
+
+    #[test]
+    fn a_short_peer_buffer_underruns_to_silence() {
+        // Only two samples queued but four asked for: the rest is silence, not
+        // a repeat of the last sample or a panic.
+        let mixer = mixer_with(&[("a", vec![0.5; 2])], SAMPLE_RATE);
+        assert_eq!(mixer.fill(4), vec![0.5, 0.5, 0.0, 0.0]);
+    }
+
+    #[test]
+    fn a_non_48k_device_gets_its_own_rate_back() {
+        let mixer = mixer_with(&[("a", vec![0.5; 480])], 44_100);
+        // 441 samples at 44.1 kHz is the same 10 ms as 480 at 48 kHz.
+        assert_eq!(mixer.fill(441).len(), 441);
+        assert!(
+            mixer.source_samples(441) >= 480,
+            "pulls enough 48 kHz audio"
+        );
     }
 }

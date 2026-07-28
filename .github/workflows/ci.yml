@@ -88,9 +88,12 @@ jobs:
         working-directory: crates/accord-client
         run: npm ci --ignore-scripts
 
+      # `npm run`, not `npx`: npx will fetch and execute a package from the
+      # registry when it isn't installed locally, which is a supply-chain hole
+      # in CI even when the local install normally wins the race.
       - name: Type-check the frontend
         working-directory: crates/accord-client
-        run: npx tsc --noEmit
+        run: npm run typecheck
 
       # tauri-build resolves frontendDist (../dist) while compiling the crate,
       # so the frontend has to be built before the Rust build, not after.
