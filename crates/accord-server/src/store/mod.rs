@@ -151,7 +151,11 @@ pub trait Store: Send + Sync + std::fmt::Debug {
     /// it so the same install keeps a stable device id across restarts (the
     /// mailbox and Welcome inbox are keyed by device id).
     async fn find_device(&self, user_id: Uuid, name: &str) -> ServerResult<Option<Uuid>>;
-    async fn revoke_device(&self, device_id: Uuid) -> ServerResult<()>;
+    /// Revoke one of `user_id`'s own devices. Scoping the write to the owner is
+    /// what enforces "a user may only revoke their own device" - device ids are
+    /// legitimately disclosed to other users by `FetchKeyPackages`, so an
+    /// unscoped revoke would let anyone knock another account's devices offline.
+    async fn revoke_device(&self, user_id: Uuid, device_id: Uuid) -> ServerResult<()>;
     async fn set_device_credential(&self, device_id: Uuid, credential: &[u8]) -> ServerResult<()>;
 
     // --- refresh tokens ---

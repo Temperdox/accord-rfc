@@ -405,8 +405,8 @@ function Home(props: { home: ServerSession }) {
   const [voicePrefs, setVoicePrefsSig] = createSignal<voicePrefsMod.VoicePrefs>(
     voicePrefsMod.loadVoicePrefs()
   );
-  const [audioInputs, setAudioInputs] = createSignal<MediaDeviceInfo[]>([]);
-  const [audioOutputs, setAudioOutputs] = createSignal<MediaDeviceInfo[]>([]);
+  const [audioInputs, setAudioInputs] = createSignal<api.AudioDevice[]>([]);
+  const [audioOutputs, setAudioOutputs] = createSignal<api.AudioDevice[]>([]);
   // Mic test (loopback + meter): the running test's stop fn + its live level.
   const [micTestLevel, setMicTestLevel] = createSignal(0);
   let micTestStop: (() => void) | null = null;
@@ -440,14 +440,15 @@ function Home(props: { home: ServerSession }) {
     voicePrefsMod.saveVoicePrefs(next);
     void voice.setAudioPrefs(next);
   }
-  /** Enumerate audio input/output devices (labels appear after mic permission). */
+  /** Enumerate audio devices from the native engine (the webview's
+   * `enumerateDevices` describes devices the media stack no longer uses). */
   async function loadAudioDevices() {
     try {
-      const devs = await navigator.mediaDevices.enumerateDevices();
-      setAudioInputs(devs.filter((d) => d.kind === "audioinput"));
-      setAudioOutputs(devs.filter((d) => d.kind === "audiooutput"));
-    } catch {
-      /* enumeration unavailable */
+      const devs = await api.listAudioDevices();
+      setAudioInputs(devs.inputs);
+      setAudioOutputs(devs.outputs);
+    } catch (e) {
+      setError(String(e));
     }
   }
   const [yggMode, setYggMode] = createSignal<api.YggPeerMode>("public");
@@ -922,7 +923,7 @@ function Home(props: { home: ServerSession }) {
       if (activeVoice() && activeVoice() !== groupId) {
         await voice.leave(activeVoice()!);
       }
-      const deviceId = await api.getMyDeviceId().catch(() => "");
+      const deviceId = await api.getMyDeviceId();
       setMyDeviceId(deviceId);
       await voice.join(groupId, deviceId);
       setActiveVoice(groupId);
@@ -930,6 +931,35 @@ function Home(props: { home: ServerSession }) {
     } catch (err) {
       setError(String(err));
     }
+  }
+
+  /** Banner a friend's incoming DM call, with a button to join it.
+   *
+   * The conversation may not be in the list yet: the caller creates the DM
+   * moments before joining voice, so on the very first call the Welcome and
+   * this event race. One refresh settles it - without that the first call
+   * anyone places would ring nowhere. */
+  async function ringIncomingCall(p: api.VoiceParticipant) {
+    let conv = dmConversations().find((d) => d.groupId === p.groupId);
+    if (!conv) {
+      await refreshDms();
+      conv = dmConversations().find((d) => d.groupId === p.groupId);
+    }
+    // Not a DM: a tavern voice channel already shows its participants in the
+    // channel list, so a banner would be noise.
+    if (!conv) return;
+    const target = conv;
+    const key = `incoming-call-${p.groupId}`;
+    notify({
+      key,
+      severity: "info",
+      message: `${p.displayName || p.username || target.peerName} is calling you.`,
+      actionLabel: "Join call",
+      onAction: () => {
+        dismissKey(key);
+        void openConversation(target).then(() => joinVoiceChannel(target.groupId));
+      },
+    });
   }
 
   async function leaveVoiceChannel() {
@@ -1205,22 +1235,25 @@ function Home(props: { home: ServerSession }) {
       })
     );
     unlisteners.push(
+      // Roster only: the native engine gets this event directly and drives the
+      // peer mesh itself, so a call is not disturbed by the UI switching
+      // servers. Rendering, however, is per-server.
       await api.onVoiceParticipant((p) => {
+        // Ring first, and deliberately before the active-server filter: a
+        // friend's DM call arrives on whichever session hosts that DM, which is
+        // usually not the one being viewed. Without this the callee has no way
+        // to know they are being called.
+        if (p.joined && p.deviceId !== myDeviceId() && p.groupId !== activeVoice()) {
+          void ringIncomingCall(p);
+        }
+        if (!p.joined) dismissKey(`incoming-call-${p.groupId}`);
+
         if (p.serverId !== activeServerId()) return;
         setVoiceParticipants((prev) => {
           const list = (prev[p.groupId] ?? []).filter((x) => x.deviceId !== p.deviceId);
           if (p.joined) list.push(p);
           return { ...prev, [p.groupId]: list };
         });
-        // Drive the WebRTC mesh: connect to joiners, drop leavers.
-        voice.onParticipant(p);
-      })
-    );
-    unlisteners.push(
-      // Relayed WebRTC signaling -> the (stubbed) media layer.
-      await api.onVoiceSignal((s) => {
-        if (s.serverId !== activeServerId()) return;
-        voice.handleSignal(s);
       })
     );
     unlisteners.push(
@@ -1239,12 +1272,13 @@ function Home(props: { home: ServerSession }) {
         syncFr();
       })
     );
-    // Keep the requests/friends views fresh (and retry queued deliveries +
-    // profile backfills) while either is open - pending placeholders show in
-    // the Friends list too.
-    const frTimer = setInterval(() => {
-      if (dmSel() === "requests" || dmSel() === "friends") syncFr();
-    }, 45_000);
+    // Incoming friend requests are parked on the home node with no push, so
+    // this poll is the only way they surface. It runs regardless of the current
+    // view (gating it on the Friends view meant a user sitting in a DM or a
+    // tavern never learned of a request), and also retries queued deliveries
+    // and backfills pending-sent profiles.
+    void syncFr();
+    const frTimer = setInterval(() => void syncFr(), 45_000);
     unlisteners.push(() => clearInterval(frTimer));
     unlisteners.push(
       // Persisted DMs reconnect in the background after login; refresh the list
@@ -1383,8 +1417,10 @@ function Home(props: { home: ServerSession }) {
     }
   }
 
-  /** Start (or re-open) a DM with a contact, then show the conversation. */
-  async function openDm(c: api.ContactDto) {
+  /** Start (or re-open) a DM with a contact, then show the conversation.
+   * Returns the opened conversation, or null when the contact's host could not
+   * be reached - callers must not fall back to whatever was open before. */
+  async function openDm(c: api.ContactDto): Promise<api.DmConversation | null> {
     setDmSel(c.id);
     setError(null);
     let route = dmRoutes()[c.id];
@@ -1397,20 +1433,22 @@ function Home(props: { home: ServerSession }) {
       } catch (e) {
         setError(String(e));
         setDmOpening(false);
-        return;
+        return null;
       }
       setDmOpening(false);
     }
     const r = route;
-    if (!r) return;
+    if (!r) return null;
     await refreshDms();
-    await openConversation({
+    const conv: api.DmConversation = {
       serverId: r.serverId,
       groupId: r.group.id,
       peerId: c.id,
       peerName: c.name,
       fingerprint: c.fingerprint,
-    });
+    };
+    await openConversation(conv);
+    return conv;
   }
 
   // --- custom context menu + contact/member actions ---
@@ -1438,8 +1476,10 @@ function Home(props: { home: ServerSession }) {
   async function callContact(c: api.ContactDto) {
     setProfileCard(null);
     closeMenu();
-    await openDm(c);
-    const conv = activeConv();
+    // Only ever call into the conversation openDm actually opened for THIS
+    // contact - on failure it returns null rather than leaving the previous
+    // conversation active, which would place the call to the wrong person.
+    const conv = await openDm(c);
     if (conv) await joinVoiceChannel(conv.groupId);
   }
   async function removeFriend(c: api.ContactDto) {
@@ -3930,8 +3970,9 @@ function Home(props: { home: ServerSession }) {
                         <option value="">System default</option>
                         <For each={audioInputs()}>
                           {(d) => (
-                            <option value={d.deviceId}>
-                              {d.label || `Microphone ${d.deviceId.slice(0, 6)}`}
+                            <option value={d.id}>
+                              {d.name}
+                              {d.isDefault ? " (default)" : ""}
                             </option>
                           )}
                         </For>
@@ -3947,13 +3988,17 @@ function Home(props: { home: ServerSession }) {
                         <option value="">System default</option>
                         <For each={audioOutputs()}>
                           {(d) => (
-                            <option value={d.deviceId}>
-                              {d.label || `Speaker ${d.deviceId.slice(0, 6)}`}
+                            <option value={d.id}>
+                              {d.name}
+                              {d.isDefault ? " (default)" : ""}
                             </option>
                           )}
                         </For>
                       </select>
-                      <p class="field-help">Device names appear after you've allowed mic access once.</p>
+                      <p class="field-help">
+                        Devices come from the system audio stack. Changing one applies to your
+                        next call.
+                      </p>
                     </div>
 
                     <div class="field">
@@ -4003,60 +4048,19 @@ function Home(props: { home: ServerSession }) {
                         </div>
                       </div>
                       <p class="field-help">
-                        Routes your mic through a local WebRTC loopback and plays the result back,
-                        so you can confirm WebRTC carries your audio and tune the volume sliders
-                        live - all before joining a call. Use headphones to avoid echo.
+                        Captures from the selected microphone and shows its level, so you can
+                        confirm the device works and tune the volume sliders before joining a
+                        call. Nothing is transmitted.
                       </p>
                     </div>
 
                     <h4>Input processing</h4>
-                    <div class="field">
-                      <label class="field-label" for="ns-mode">Noise suppression</label>
-                      <select
-                        id="ns-mode"
-                        value={voicePrefs().noiseSuppression}
-                        onChange={(e) =>
-                          updateVoicePrefs({
-                            noiseSuppression: e.currentTarget
-                              .value as voicePrefsMod.NoiseSuppression,
-                          })
-                        }
-                      >
-                        <option value="none">None</option>
-                        <option value="standard">Standard (built-in)</option>
-                        <option value="rnnoise">RNNoise (recommended)</option>
-                      </select>
-                      <p class="field-help">
-                        Reduces background noise from your mic. "Standard" uses the built-in WebRTC
-                        suppression; "RNNoise" is a stronger AI model (the free, open-source
-                        equivalent of Discord's Krisp) that runs locally.
-                      </p>
-                    </div>
-                    <div class="field">
-                      <label class="check">
-                        <input
-                          type="checkbox"
-                          checked={voicePrefs().echoCancellation}
-                          onChange={(e) =>
-                            updateVoicePrefs({ echoCancellation: e.currentTarget.checked })
-                          }
-                        />
-                        Echo cancellation
-                      </label>
-                    </div>
-                    <div class="field">
-                      <label class="check">
-                        <input
-                          type="checkbox"
-                          checked={voicePrefs().autoGain}
-                          onChange={(e) => updateVoicePrefs({ autoGain: e.currentTarget.checked })}
-                        />
-                        Automatic gain control
-                      </label>
-                      <p class="field-help">
-                        Changes apply immediately if you're in a call, otherwise on your next join.
-                      </p>
-                    </div>
+                    <p class="field-help">
+                      Noise suppression, echo cancellation, and automatic gain control aren't
+                      available yet: they came from the browser's audio stack, and voice now runs
+                      natively (the Linux webview has no WebRTC at all). Until they're
+                      reimplemented, use headphones to avoid echo.
+                    </p>
                   </div>
                 </Show>
 

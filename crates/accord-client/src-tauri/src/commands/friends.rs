@@ -126,6 +126,34 @@ fn save_outbox(app: &AppHandle, entries: &[OutboxEntry]) -> Result<(), String> {
     std::fs::write(outbox_path(app)?, blob).map_err(|e| e.to_string())
 }
 
+/// Serializes read-modify-write cycles on the outbox file. Tauri runs commands
+/// concurrently and deliveries take seconds (a connect timeout per unreachable
+/// address), so every mutation goes through [`update_outbox`] - which re-reads
+/// under this lock instead of writing back a snapshot taken before the network
+/// work, which would silently erase whatever the user did meanwhile.
+static OUTBOX_LOCK: std::sync::LazyLock<tokio::sync::Mutex<()>> =
+    std::sync::LazyLock::new(|| tokio::sync::Mutex::new(()));
+
+/// Apply `mutate` to a freshly-read outbox and persist it when the closure
+/// reports a change. Returns the outbox as it now stands on disk.
+async fn update_outbox<F>(app: &AppHandle, mutate: F) -> Result<Vec<OutboxEntry>, String>
+where
+    F: FnOnce(&mut Vec<OutboxEntry>) -> bool,
+{
+    let _guard = OUTBOX_LOCK.lock().await;
+    let mut outbox = load_outbox(app);
+    if mutate(&mut outbox) {
+        save_outbox(app, &outbox)?;
+    }
+    Ok(outbox)
+}
+
+/// Read the outbox under the lock (no mutation).
+async fn read_outbox(app: &AppHandle) -> Vec<OutboxEntry> {
+    let _guard = OUTBOX_LOCK.lock().await;
+    load_outbox(app)
+}
+
 fn now_ms() -> i64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -240,13 +268,16 @@ pub async fn send_friend_request(
     };
     entry.delivered = deliver(&app, &mut entry).await.is_ok();
 
-    let mut outbox = load_outbox(&app);
-    outbox.retain(|e| !(e.peer_id == peer_id && e.kind == "request"));
-    outbox.push(entry.clone());
-    save_outbox(&app, &outbox)?;
+    let dto = pending_dto(&entry);
+    update_outbox(&app, |outbox| {
+        outbox.retain(|e| !(e.peer_id == peer_id && e.kind == "request"));
+        outbox.push(entry);
+        true
+    })
+    .await?;
     let _ = app.emit("friends-changed", ());
 
-    Ok(pending_dto(&entry))
+    Ok(dto)
 }
 
 /// Re-attempt delivery of a pending request right now (their node upserts, so
@@ -258,19 +289,24 @@ pub async fn resend_friend_request(
     peer_id: String,
     my_display: String,
 ) -> Result<PendingSentDto, String> {
-    let mut outbox = load_outbox(&app);
-    let entry = outbox
-        .iter_mut()
+    let mut entry = read_outbox(&app)
+        .await
+        .into_iter()
         .find(|e| e.peer_id == peer_id && e.kind == "request")
         .ok_or("no pending request for this contact")?;
     if entry.my_display.is_empty() {
         entry.my_display = my_display;
     }
-    entry.delivered = deliver(&app, entry).await.is_ok();
+    entry.delivered = deliver(&app, &mut entry).await.is_ok();
     entry.sent_at_ms = now_ms();
-    let dto = pending_dto(entry);
+    let dto = pending_dto(&entry);
     let delivered = entry.delivered;
-    save_outbox(&app, &outbox)?;
+    update_outbox(&app, |outbox| {
+        outbox.retain(|e| !(e.peer_id == peer_id && e.kind == "request"));
+        outbox.push(entry);
+        true
+    })
+    .await?;
     let _ = app.emit("friends-changed", ());
     if delivered {
         Ok(dto)
@@ -297,12 +333,14 @@ pub fn peek_contact_code(code: String) -> Result<CodePeek, String> {
 /// requests, and return what the UI should show.
 #[tauri::command]
 pub async fn sync_friends(app: AppHandle, my_display: String) -> Result<FriendsSync, String> {
-    // 1. Retry the outbox (requests AND acceptances). Delivered requests that
-    // are still missing the peer's profile (delivered by an older build, or
-    // the profile fetch failed) get a backfill attempt the same way.
-    let mut outbox = load_outbox(&app);
-    let mut outbox_changed = false;
-    for entry in &mut outbox {
+    // 1. Retry the outbox (requests AND acceptances) on a snapshot. Delivered
+    // requests that are still missing the peer's profile (delivered by an older
+    // build, or the profile fetch failed) get a backfill attempt the same way.
+    // The file is deliberately not held across these deliveries - each one can
+    // burn a connect timeout - so the results are merged back at the end.
+    let mut snapshot = read_outbox(&app).await;
+    let mut delivered_now: Vec<OutboxEntry> = Vec::new();
+    for entry in &mut snapshot {
         if entry.delivered && (entry.peer_display.is_some() || entry.kind != "request") {
             continue;
         }
@@ -311,13 +349,9 @@ pub async fn sync_friends(app: AppHandle, my_display: String) -> Result<FriendsS
         }
         if deliver(&app, entry).await.is_ok() {
             entry.delivered = true;
-            outbox_changed = true;
+            delivered_now.push(entry.clone());
         }
     }
-    // Delivered acceptances are one-shot; nothing further arrives for them.
-    let before = outbox.len();
-    outbox.retain(|e| !(e.kind == "accept" && e.delivered));
-    outbox_changed |= outbox.len() != before;
 
     // 2. Fetch what's parked for me on my home node.
     let (channel, token) = home_creds(&app).await?;
@@ -331,6 +365,8 @@ pub async fn sync_friends(app: AppHandle, my_display: String) -> Result<FriendsS
     let policy = crate::settings::friend_request_policy(&app);
     let mut incoming = Vec::new();
     let mut friends_changed = false;
+    // Peers whose acceptance we consumed: their pending "request" entry is done.
+    let mut accepted_peers: Vec<String> = Vec::new();
     for entry in parked {
         let Ok((target, identity)) = target_from_code(&entry.contact_code) else {
             // Garbage row; clear it.
@@ -341,11 +377,19 @@ pub async fn sync_friends(app: AppHandle, my_display: String) -> Result<FriendsS
 
         if entry.kind == "accept" {
             // They accepted us: add them, complete the pending-sent, clear row.
-            let _ = contacts::add_contact(app.clone(), entry.contact_code.clone());
-            outbox.retain(|e| !(e.peer_id == peer_id && e.kind == "request"));
-            outbox_changed = true;
-            friends_changed = true;
-            delete_parked(&app, &channel, &token, &entry.id).await;
+            // Only drop the parked row once the contact is actually stored, so a
+            // failed write leaves the acceptance to be consumed on the next sync
+            // instead of losing the friendship on this side.
+            match contacts::add_contact(app.clone(), entry.contact_code.clone()) {
+                Ok(_) => {
+                    accepted_peers.push(peer_id);
+                    friends_changed = true;
+                    delete_parked(&app, &channel, &token, &entry.id).await;
+                }
+                Err(e) => {
+                    tracing::warn!(error = %e, "could not add accepted friend; retrying next sync")
+                }
+            }
             continue;
         }
 
@@ -367,9 +411,37 @@ pub async fn sync_friends(app: AppHandle, my_display: String) -> Result<FriendsS
         });
     }
 
-    if outbox_changed {
-        save_outbox(&app, &outbox)?;
-    }
+    // 3. Merge the delivery results into the outbox as it stands *now* (the user
+    // may have sent, cancelled, or accepted something while we were on the
+    // network), rather than writing back the pre-delivery snapshot.
+    let outbox = update_outbox(&app, |outbox| {
+        let mut changed = false;
+        for done in &delivered_now {
+            if let Some(e) = outbox
+                .iter_mut()
+                .find(|e| e.peer_id == done.peer_id && e.kind == done.kind)
+            {
+                e.delivered = true;
+                if done.peer_username.is_some() {
+                    e.peer_username.clone_from(&done.peer_username);
+                }
+                if done.peer_display.is_some() {
+                    e.peer_display.clone_from(&done.peer_display);
+                }
+                changed = true;
+            }
+        }
+        let before = outbox.len();
+        // A consumed acceptance completes its pending request, and delivered
+        // acceptances are one-shot - nothing further arrives for either.
+        outbox.retain(|e| {
+            !(e.kind == "request" && accepted_peers.contains(&e.peer_id))
+                && !(e.kind == "accept" && e.delivered)
+        });
+        changed || outbox.len() != before
+    })
+    .await?;
+
     if friends_changed {
         let _ = app.emit("friends-changed", ());
     }
@@ -392,13 +464,17 @@ pub async fn respond_friend_request(
     my_display: String,
 ) -> Result<(), String> {
     let (channel, token) = home_creds(&app).await?;
-    delete_parked(&app, &channel, &token, &id).await;
     if !accept {
+        delete_parked(&app, &channel, &token, &id).await;
         return Ok(());
     }
 
-    // Add them now, and queue the acceptance back to their node (so they add us).
+    // Add them now, and queue the acceptance back to their node (so they add
+    // us). The parked row is only cleared once the contact is stored - dropping
+    // it first would make a failed write unrecoverable (the row is gone, so
+    // Accept can never be retried).
     contacts::add_contact(app.clone(), code.clone())?;
+    delete_parked(&app, &channel, &token, &id).await;
     let (target, identity) = target_from_code(&code)?;
     let mut entry = OutboxEntry {
         peer_id: contacts::to_hex(&identity),
@@ -413,23 +489,30 @@ pub async fn respond_friend_request(
     };
     entry.delivered = deliver(&app, &mut entry).await.is_ok();
 
-    let mut outbox = load_outbox(&app);
-    outbox.retain(|e| !(e.peer_id == entry.peer_id && e.kind == "accept"));
-    if !entry.delivered {
-        outbox.push(entry);
-    }
-    save_outbox(&app, &outbox)?;
+    let peer_id = entry.peer_id.clone();
+    update_outbox(&app, |outbox| {
+        outbox.retain(|e| !(e.peer_id == peer_id && e.kind == "accept"));
+        if !entry.delivered {
+            outbox.push(entry);
+        }
+        true
+    })
+    .await?;
     let _ = app.emit("friends-changed", ());
     Ok(())
 }
 
 /// Withdraw a pending request locally (their node's copy can't be recalled, but
-/// no acceptance will be consumed once this is gone).
+/// the pending row goes away here).
 #[tauri::command]
-pub fn cancel_friend_request(app: AppHandle, peer_id: String) -> Result<(), String> {
-    let mut outbox = load_outbox(&app);
-    outbox.retain(|e| !(e.peer_id == peer_id && e.kind == "request"));
-    save_outbox(&app, &outbox)
+pub async fn cancel_friend_request(app: AppHandle, peer_id: String) -> Result<(), String> {
+    update_outbox(&app, |outbox| {
+        let before = outbox.len();
+        outbox.retain(|e| !(e.peer_id == peer_id && e.kind == "request"));
+        outbox.len() != before
+    })
+    .await
+    .map(|_| ())
 }
 
 /// Background sync after login: deliver queued requests/acceptances and consume

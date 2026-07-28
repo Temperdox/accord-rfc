@@ -32,6 +32,7 @@ mod taverns;
 #[cfg(test)]
 mod taverns_it;
 mod vault;
+mod voice_engine;
 mod webview_perms;
 
 use state::Sessions;
@@ -50,6 +51,10 @@ fn main() {
             if let Some(guard) = logging::init(app) {
                 std::mem::forget(guard);
             }
+            // The voice engine needs an AppHandle (to emit levels and to reach
+            // the session it signals on), so it is managed here rather than in
+            // the builder chain above.
+            tauri::Manager::manage(app, voice_engine::VoiceEngine::new(app.handle().clone()));
             // Load persisted settings into managed state.
             let handle = app.handle().clone();
             let loaded = settings::load_from_disk(&handle);
@@ -130,7 +135,12 @@ fn register_handlers(builder: tauri::Builder<tauri::Wry>) -> tauri::Builder<taur
         commands::voice::join_voice,
         commands::voice::leave_voice,
         commands::voice::set_voice_state,
-        commands::voice::send_voice_signal,
+        commands::voice::set_voice_muted,
+        commands::voice::set_voice_deafened,
+        commands::voice::set_voice_prefs,
+        commands::voice::list_audio_devices,
+        commands::voice::start_mic_test,
+        commands::voice::stop_mic_test,
         commands::accounts::list_accounts,
         commands::accounts::set_account_avatar,
         commands::contacts::my_contact_code,

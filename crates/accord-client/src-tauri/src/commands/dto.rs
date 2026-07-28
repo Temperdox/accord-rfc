@@ -138,19 +138,10 @@ pub struct VoiceParticipantDto {
     pub display_name: String,
 }
 
-/// Payload of the `voice-signal` event: a relayed WebRTC signaling envelope. The
-/// frontend WebRTC layer consumes these (the body is the future media seam).
-#[derive(Debug, Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct VoiceSignalDto {
-    pub server_id: String,
-    pub group_id: String,
-    pub from_device: String,
-    /// "offer" | "answer" | "ice" (mapped from SignalKind).
-    pub kind: String,
-    /// Opaque SDP / ICE payload (serialized as a byte array for the JS side).
-    pub data: Vec<u8>,
-}
+// NOTE: relayed WebRTC signaling has no DTO because it never reaches the
+// webview - `voice_engine` consumes offer/answer/ICE natively (see
+// commands/messaging.rs), so a call keeps negotiating regardless of what the UI
+// is showing.
 
 /// Payload of the `mod-alert` event: a guardrail decision broadcast to admins.
 #[derive(Debug, Clone, Serialize)]

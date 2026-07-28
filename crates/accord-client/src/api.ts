@@ -864,22 +864,24 @@ export interface ModAlert {
 export const onModAlert = (handler: (a: ModAlert) => void): Promise<UnlistenFn> =>
   listen<ModAlert>("mod-alert", (e) => handler(e.payload));
 
-// ---- Voice/video (scaffold) -------------------------------------------------
-// Media is WebRTC P2P in the webview (src/voice.ts, currently stubbed); these
-// commands carry only signaling over the message stream.
+// ---- Voice ------------------------------------------------------------------
+// The media pipeline (mic, Opus, WebRTC peers, playback) is NATIVE - see
+// src-tauri/src/voice_engine. WebKitGTK has no RTCPeerConnection, so a
+// webview-side stack cannot work on Linux at all. These commands drive that
+// engine; signaling never crosses the IPC bridge.
 
-/** This device's id on the active server (for WebRTC signaling addressing). */
+/** This device's id on the active server (identifies us in the voice roster). */
 export const getMyDeviceId = (): Promise<string> => invoke("get_my_device_id");
 
-/** Join a voice channel (announces presence; webview then negotiates WebRTC). */
-export const joinVoice = (groupId: string): Promise<void> =>
-  invoke("join_voice", { groupId });
+/** Join a voice channel: starts native capture/playback and announces presence. */
+export const joinVoice = (groupId: string, deviceId: string): Promise<void> =>
+  invoke("join_voice", { groupId, deviceId });
 
-/** Leave a voice channel. */
+/** Leave a voice channel (tears down peers and releases the audio devices). */
 export const leaveVoice = (groupId: string): Promise<void> =>
   invoke("leave_voice", { groupId });
 
-/** Update mic/camera/screen flags while in a voice channel. */
+/** Update mic/camera/screen flags while in a voice channel (presence only). */
 export const setVoiceState = (
   groupId: string,
   muted: boolean,
@@ -887,13 +889,46 @@ export const setVoiceState = (
   screenOn: boolean
 ): Promise<void> => invoke("set_voice_state", { groupId, muted, cameraOn, screenOn });
 
-/** Relay a WebRTC signaling envelope to a peer device. */
-export const sendVoiceSignal = (
-  groupId: string,
-  targetDevice: string,
-  kind: "offer" | "answer" | "ice",
-  data: number[]
-): Promise<void> => invoke("send_voice_signal", { groupId, targetDevice, kind, data });
+/** Stop/resume transmitting the microphone. */
+export const setVoiceMuted = (muted: boolean): Promise<void> =>
+  invoke("set_voice_muted", { muted });
+
+/** Stop/resume playing everyone else's audio. */
+export const setVoiceDeafened = (deafened: boolean): Promise<void> =>
+  invoke("set_voice_deafened", { deafened });
+
+/** Apply audio preferences (devices, gain, volume) to the engine. */
+export const setVoicePrefs = (prefs: unknown): Promise<void> =>
+  invoke("set_voice_prefs", { prefs });
+
+/** An audio device offered in settings. `id` is what prefs persist. */
+export interface AudioDevice {
+  id: string;
+  name: string;
+  isDefault: boolean;
+}
+
+/** Microphones and speakers the engine can use. */
+export const listAudioDevices = (): Promise<{
+  inputs: AudioDevice[];
+  outputs: AudioDevice[];
+}> => invoke("list_audio_devices");
+
+/** Start metering the mic for the settings Mic Test (transmits nothing). */
+export const startMicTest = (): Promise<void> => invoke("start_mic_test");
+
+/** Stop the Mic Test and release the microphone. */
+export const stopMicTest = (): Promise<void> => invoke("stop_mic_test");
+
+/** Speaking levels reported by the engine: own mic plus each peer device. */
+export interface VoiceLevels {
+  local: number;
+  peers: Record<string, number>;
+}
+
+/** Subscribe to speaking levels (emitted ~15x/second during a call or test). */
+export const onVoiceLevels = (handler: (l: VoiceLevels) => void): Promise<UnlistenFn> =>
+  listen<VoiceLevels>("voice-levels", (e) => handler(e.payload));
 
 /** A voice participant's state change. */
 export interface VoiceParticipant {
@@ -915,15 +950,6 @@ export const onVoiceParticipant = (
 ): Promise<UnlistenFn> =>
   listen<VoiceParticipant>("voice-participant", (e) => handler(e.payload));
 
-/** A relayed WebRTC signaling envelope. */
-export interface VoiceSignal {
-  serverId: string;
-  groupId: string;
-  fromDevice: string;
-  kind: "offer" | "answer" | "ice" | "unknown";
-  data: number[];
-}
-
-/** Subscribe to relayed voice signaling (consumed by the WebRTC layer). */
-export const onVoiceSignal = (handler: (s: VoiceSignal) => void): Promise<UnlistenFn> =>
-  listen<VoiceSignal>("voice-signal", (e) => handler(e.payload));
+// NOTE: there is deliberately no `onVoiceSignal` here. Offer/answer/ICE are
+// consumed by the native engine directly (src-tauri/src/commands/messaging.rs),
+// so a call keeps negotiating even while the user browses another server.

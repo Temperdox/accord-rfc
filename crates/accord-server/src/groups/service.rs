@@ -201,6 +201,12 @@ impl GroupService for GroupSvc {
             .await?;
         // The creator owns the channel.
         self.store.add_member(group_id, user_id, "owner").await?;
+        // Subscribe the creator's device: it opened its stream before this
+        // channel existed, so without this it would receive no live traffic
+        // (messages, voice roster) here until it reconnects.
+        if let Ok(device) = parse_uuid(&claims.device_id) {
+            self.hub.subscribe(device, group_id);
+        }
 
         tracing::info!(%group_id, name, channel_kind, "created public group");
         Ok(Response::new(CreateGroupResponse {

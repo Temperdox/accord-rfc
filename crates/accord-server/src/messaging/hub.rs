@@ -363,7 +363,12 @@ impl Hub {
                 .entry(group)
                 .or_default()
                 .insert(device, sender);
-            reg.device_groups.entry(device).or_default().push(group);
+            // Idempotent: re-subscribing (e.g. rejoining a voice channel) must
+            // not stack duplicate entries in the cleanup list.
+            let groups = reg.device_groups.entry(device).or_default();
+            if !groups.contains(&group) {
+                groups.push(group);
+            }
         }
     }
 

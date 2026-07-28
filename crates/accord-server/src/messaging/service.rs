@@ -143,7 +143,7 @@ impl MessagingService for MessagingSvc {
         let req = request.into_inner();
 
         let group_id = require_group_id(&req.group_id)?;
-        if !self.store.is_member(group_id, user_id).await? {
+        if !ensure_participant(self.store.as_ref(), group_id, user_id).await? {
             return Err(ServerError::PermissionDenied.into());
         }
 
@@ -213,6 +213,34 @@ async fn handle_client_message(
     }
 }
 
+/// Membership check that honours the open-join rule for public channels.
+///
+/// Public channels are open to every non-guest account on this server - the
+/// same rule `GroupService::add_members` documents - but nothing in the client
+/// ever calls that RPC, so a channel created by one user would otherwise stay a
+/// one-member room forever and everyone else's join would be denied. A public
+/// channel therefore materialises the membership row on first use. Private
+/// groups (DMs) keep the strict check: their membership comes from MLS.
+async fn ensure_participant(
+    store: &dyn Store,
+    group_id: Uuid,
+    user_id: Uuid,
+) -> Result<bool, ServerError> {
+    if store.is_member(group_id, user_id).await? {
+        return Ok(true);
+    }
+    if store.get_group(group_id).await?.kind != "public" {
+        return Ok(false);
+    }
+    // Guests (open_dms DM-only accounts) and banned users stay out.
+    if store.is_user_guest(user_id).await? || store.is_banned(user_id).await? {
+        return Ok(false);
+    }
+    store.add_member(group_id, user_id, "member").await?;
+    tracing::info!(%group_id, %user_id, "joined public channel on first use");
+    Ok(true)
+}
+
 /// Relay a WebRTC signaling envelope to its target device. The server forwards
 /// `data` verbatim and never inspects it (media is P2P/DTLS-SRTP; this preserves
 /// the §5 crypto boundary, same discipline as MLS ciphertext relay).
@@ -224,7 +252,7 @@ async fn handle_voice_signal(
     mut signal: VoiceSignal,
 ) -> Result<(), ServerError> {
     let group_id = require_group_id(&signal.group_id)?;
-    if !store.is_member(group_id, user_id).await? {
+    if !ensure_participant(store, group_id, user_id).await? {
         return Err(ServerError::PermissionDenied);
     }
     let Some(target) = signal
@@ -260,9 +288,13 @@ async fn handle_voice_state(
     update: VoiceStateUpdate,
 ) -> Result<(), ServerError> {
     let group_id = require_group_id(&update.group_id)?;
-    if !store.is_member(group_id, user_id).await? {
+    if !ensure_participant(store, group_id, user_id).await? {
         return Err(ServerError::PermissionDenied);
     }
+    // The device may have opened its stream before it was a member of this
+    // channel (it just joined, or the channel was created after connecting), so
+    // make sure it is subscribed or it would never see the roster fan-out.
+    hub.subscribe(device_id, group_id);
     // Attach the profile so peers see a name + avatar, not a raw id.
     let (username, display_name, _avatar) = store
         .user_profile(user_id)
@@ -312,7 +344,7 @@ async fn handle_public_message(
             "message content is empty".into(),
         ));
     }
-    if !store.is_member(group_id, user_id).await? {
+    if !ensure_participant(store, group_id, user_id).await? {
         return Err(ServerError::PermissionDenied);
     }
 

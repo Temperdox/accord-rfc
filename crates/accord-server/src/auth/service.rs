@@ -436,8 +436,12 @@ impl AuthService for AuthSvc {
         &self,
         request: Request<RevokeDeviceRequest>,
     ) -> Result<Response<RevokeDeviceResponse>, Status> {
-        // Must be authenticated; a user may only revoke their own device.
-        let _claims = authenticate(&request, &self.jwt)?;
+        // Must be authenticated; a user may only revoke their own device, which
+        // the owner-scoped store call enforces (a foreign device id simply
+        // matches no row).
+        let claims = authenticate(&request, &self.jwt)?;
+        let caller = Uuid::parse_str(&claims.sub)
+            .map_err(|_| ServerError::InvalidArgument("invalid user id in token".into()))?;
         let req = request.into_inner();
         let device_id = req
             .device_id
@@ -445,7 +449,7 @@ impl AuthService for AuthSvc {
         let uuid = Uuid::parse_str(&device_id.value)
             .map_err(|_| ServerError::InvalidArgument("device_id is not a valid UUID".into()))?;
 
-        self.store.revoke_device(uuid).await?;
+        self.store.revoke_device(caller, uuid).await?;
         Ok(Response::new(RevokeDeviceResponse {}))
     }
 

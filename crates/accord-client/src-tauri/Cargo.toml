@@ -43,6 +43,17 @@ reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"
 # Local UTC offset, used to infer the user's region when ranking public peers.
 chrono.workspace = true
 
+# --- Native voice (see src/voice_engine) ---
+# The webview cannot carry the media: WebKitGTK on Linux ships without
+# RTCPeerConnection (verified on Fedora 44 - the API is absent even with
+# `enable-webrtc` on), so capture, encode, and transport all live in Rust and
+# every platform uses the same path. webrtc-rs supplies ICE/DTLS/SRTP, cpal the
+# OS audio devices, opus the codec WebRTC mandates for voice.
+webrtc = "0.17"
+cpal = "0.18"
+opus = "0.3"
+bytes = "1"
+
 # Verbose logging to a file (captures client + embedded server + yggdrasil, which
 # all use `tracing`) so issues can be downloaded/inspected from the dev menu.
 tracing.workspace = true

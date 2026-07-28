@@ -82,11 +82,19 @@ mod windows_impl {
 #[cfg(target_os = "linux")]
 mod linux_impl {
     use tauri::webview::PlatformWebview;
-    use webkit2gtk::prelude::*;
+    use webkit2gtk::glib::prelude::*;
+    use webkit2gtk::{PermissionRequestExt, SettingsExt, WebViewExt};
 
     /// Auto-allow WebKitGTK user-media (mic/camera) permission requests.
     pub fn grant(webview: &PlatformWebview) {
         let wv = webview.inner();
+        // WebKitGTK gates WebRTC behind a setting that is off by default (and
+        // several distro builds ship without the API entirely). Voice does not
+        // depend on the webview stack, but enabling it costs nothing and keeps
+        // the browser-side path usable where it does exist.
+        if let Some(settings) = wv.settings() {
+            settings.set_enable_webrtc(true);
+        }
         wv.connect_permission_request(|_wv, req| {
             if req.is::<webkit2gtk::UserMediaPermissionRequest>() {
                 req.allow();

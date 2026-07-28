@@ -187,6 +187,9 @@ pub struct GuestSession {
     pub token: String,
     pub refresh_token: String,
     pub user_id: String,
+    /// Our device row on that host. Voice needs it: the WebRTC offerer election
+    /// compares device ids, so a DM session without one can never place a call.
+    pub device_id: String,
 }
 
 /// Reach a contact's host (LAN, then mesh) and log in as our stable guest
@@ -254,6 +257,7 @@ pub async fn guest_login(
         token: login.access_token,
         refresh_token: login.refresh_token,
         user_id: login.user_id.map(|u| u.value).unwrap_or_default(),
+        device_id: login.device_id.map(|d| d.value).unwrap_or_default(),
     })
 }
 
@@ -281,6 +285,7 @@ async fn open_dm_with_contact(
         token,
         refresh_token,
         user_id: guest_user_id,
+        device_id: guest_device_id,
     } = guest;
 
     // Contact identity for the MLS engine (same derivation as in guest_login).
@@ -316,6 +321,7 @@ async fn open_dm_with_contact(
         s.endpoint = Some(endpoint);
         s.cert = cert;
         s.user_id = Some(guest_user_id.clone());
+        s.device_id = Some(guest_device_id.clone());
         s.token = Some(token.clone());
         s.refresh_token = Some(refresh_token);
         s.engine = Some(engine.clone());

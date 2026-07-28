@@ -588,12 +588,16 @@ impl Store for SqliteStore {
         }
     }
 
-    async fn revoke_device(&self, device_id: Uuid) -> ServerResult<()> {
-        sqlx::query("UPDATE devices SET revoked_at = ? WHERE id = ? AND revoked_at IS NULL")
-            .bind(Utc::now().timestamp_millis())
-            .bind(device_id.to_string())
-            .execute(&self.pool)
-            .await?;
+    async fn revoke_device(&self, user_id: Uuid, device_id: Uuid) -> ServerResult<()> {
+        sqlx::query(
+            "UPDATE devices SET revoked_at = ?
+             WHERE id = ? AND user_id = ? AND revoked_at IS NULL",
+        )
+        .bind(Utc::now().timestamp_millis())
+        .bind(device_id.to_string())
+        .bind(user_id.to_string())
+        .execute(&self.pool)
+        .await?;
         Ok(())
     }
 

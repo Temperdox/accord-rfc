@@ -34,7 +34,7 @@ use tonic::{Code, Request};
 use crate::commands::dto::{
     AuditDto, BanDto, CategoryDto, ConnectionStatus, DecryptedHistory, GroupDto, HistoryEntry,
     JoinedGroup, MemberDto, MessageDto, ModAlertDto, MyPermsDto, PrivateMessageDto, ProfileDto,
-    RoleDto, TavernDto, VoiceParticipantDto, VoiceSignalDto,
+    RoleDto, TavernDto, VoiceParticipantDto,
 };
 use crate::grpc::{authed, require_session, status_to_string};
 use crate::state::{SharedEngine, SharedSessions};
@@ -49,7 +49,6 @@ const INCOMING_PRIVATE: &str = "incoming-private-message";
 const HISTORY_DECRYPTED: &str = "private-history-decrypted";
 const JOINED_GROUP: &str = "joined-group";
 const VOICE_PARTICIPANT: &str = "voice-participant";
-const VOICE_SIGNAL: &str = "voice-signal";
 const MOD_ALERT: &str = "mod-alert";
 const OUTBOUND_BUFFER: usize = 32;
 
@@ -372,6 +371,12 @@ async fn handle_server_message(
                 username: p.username,
                 display_name: p.display_name,
             };
+            // The native engine drives the peer mesh from this; the webview
+            // only renders the roster. Routing it here rather than through the
+            // UI means a call survives the user browsing another server.
+            app.state::<crate::voice_engine::VoiceEngine>()
+                .on_participant(server_id, &dto.group_id, &dto.device_id, dto.joined)
+                .await;
             if app.emit(VOICE_PARTICIPANT, dto).is_err() {
                 return Break(());
             }
@@ -383,18 +388,14 @@ async fn handle_server_message(
                 2 => "answer",
                 3 => "ice",
                 _ => "unknown",
-            }
-            .to_owned();
-            let dto = VoiceSignalDto {
-                server_id: server_id.to_owned(),
-                group_id: s.group_id.map(|g| g.value).unwrap_or_default(),
-                from_device: s.from_device.map(|d| d.value).unwrap_or_default(),
-                kind,
-                data: s.data,
             };
-            if app.emit(VOICE_SIGNAL, dto).is_err() {
-                return Break(());
-            }
+            let group_id = s.group_id.map(|g| g.value).unwrap_or_default();
+            let from_device = s.from_device.map(|d| d.value).unwrap_or_default();
+            // Signaling is consumed natively and never surfaces in the webview:
+            // it is WebRTC plumbing, and the media stack that needs it is here.
+            app.state::<crate::voice_engine::VoiceEngine>()
+                .on_signal(server_id, &group_id, &from_device, kind, &s.data)
+                .await;
         }
         ServerPayload::ModAlert(a) => {
             // Severity: 1=info, 2=warn, 3=hostile (see messaging.proto).
@@ -702,10 +703,13 @@ pub async fn get_my_permissions(state: State<'_, SharedSessions>) -> Result<MyPe
 #[tauri::command]
 pub async fn get_my_device_id(state: State<'_, SharedSessions>) -> Result<String, String> {
     let sessions = state.lock().await;
-    Ok(sessions
+    // An empty id would silently break voice: the offerer election compares
+    // device ids, so a caller without one never offers. Fail loudly instead.
+    sessions
         .active()
         .and_then(|s| s.device_id.clone())
-        .unwrap_or_default())
+        .filter(|d| !d.is_empty())
+        .ok_or_else(|| "this session has no device id - reconnect and try again".to_owned())
 }
 
 // --- Roles management (RoleService) -----------------------------------------

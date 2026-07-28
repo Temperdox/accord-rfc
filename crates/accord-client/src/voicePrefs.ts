@@ -1,23 +1,23 @@
 /**
- * Client-only voice/video preferences (device selection + input processing).
- * These never leave the device, so they live in localStorage rather than the
- * server. `voice.ts` reads them when capturing the mic / routing output.
+ * Client-only voice preferences (device selection + levels). These never leave
+ * the device, so they live in localStorage rather than the server; the native
+ * engine (`src-tauri/src/voice_engine`) reads them via `set_voice_prefs`.
  */
-/** Noise suppression mode:
- * - "none": no suppression
- * - "standard": the browser's built-in WebRTC noise suppression
- * - "rnnoise": RNNoise WASM (stronger, the free Krisp equivalent) */
+/** Noise suppression mode. NOT currently applied: it was implemented in the
+ * browser audio stack, which the media path no longer goes through. Kept so
+ * saved settings survive until native processing lands. */
 export type NoiseSuppression = "none" | "standard" | "rnnoise";
 
 export interface VoicePrefs {
-  /** Preferred mic input deviceId ("" = system default). */
+  /** Preferred mic device id from `list_audio_devices` ("" = system default). */
   micDeviceId: string;
-  /** Preferred audio output deviceId ("" = system default). */
+  /** Preferred output device id ("" = system default). */
   speakerDeviceId: string;
+  /** Unused pending native input processing (see the type's note). */
   noiseSuppression: NoiseSuppression;
-  /** Echo cancellation. */
+  /** Unused pending native input processing. */
   echoCancellation: boolean;
-  /** Automatic gain control. */
+  /** Unused pending native input processing. */
   autoGain: boolean;
   /** Mic input gain sent to peers, percent (0-200; 100 = unchanged). */
   micGain: number;

@@ -497,11 +497,15 @@ impl Store for PostgresStore {
         Ok(row.map(|(id,)| id))
     }
 
-    async fn revoke_device(&self, device_id: Uuid) -> ServerResult<()> {
-        sqlx::query("UPDATE devices SET revoked_at = now() WHERE id = $1 AND revoked_at IS NULL")
-            .bind(device_id)
-            .execute(&self.pool)
-            .await?;
+    async fn revoke_device(&self, user_id: Uuid, device_id: Uuid) -> ServerResult<()> {
+        sqlx::query(
+            "UPDATE devices SET revoked_at = now()
+             WHERE id = $1 AND user_id = $2 AND revoked_at IS NULL",
+        )
+        .bind(device_id)
+        .bind(user_id)
+        .execute(&self.pool)
+        .await?;
         Ok(())
     }
 

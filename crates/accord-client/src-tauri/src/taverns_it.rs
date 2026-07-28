@@ -98,6 +98,7 @@ async fn client_taverns_roundtrip() {
                         name: name.into(),
                         description: String::new(),
                         channel_kind: kind.into(),
+                        category_id: String::new(),
                     }),
                     &token,
                 )
@@ -159,6 +160,7 @@ async fn client_taverns_roundtrip() {
                     name: "Client IT Tavern".into(),
                     icon_url: String::new(),
                     description: String::new(),
+                    banner_url: String::new(),
                 }),
                 &token,
             )

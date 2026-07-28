@@ -96,6 +96,15 @@ impl Sessions {
         Some((s.channel.clone()?, s.token.clone()?))
     }
 
+    /// The outbound stream sender for a specific server id. Voice uses this
+    /// rather than [`Sessions::active`]: a call is pinned to the server hosting
+    /// its channel, so switching the UI to another server mid-call must not
+    /// redirect the signaling.
+    #[must_use]
+    pub fn outbound_for(&self, id: &str) -> Option<mpsc::Sender<ClientMessage>> {
+        self.map.get(id)?.outbound.clone()
+    }
+
     /// Channel + token for the session owning `user_id` (for per-session vault
     /// uploads from background sessions).
     #[must_use]
