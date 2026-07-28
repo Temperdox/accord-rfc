@@ -45,10 +45,12 @@ jobs:
       matrix:
         os: [ubuntu-latest, windows-latest]
     env:
-      # build.rs embeds a requireAdministrator manifest into every Windows
-      # executable, test binaries included, and those then refuse to start from
-      # the runner's non-elevated shell. The client's tests need no privileges,
-      # so CI uses the documented opt-out. Release builds never set this.
+      # Only matters if this job ever *runs* a Windows binary: build.rs embeds a
+      # requireAdministrator manifest into every Windows executable, test
+      # binaries included, and those then refuse to start from the runner's
+      # non-elevated shell. Windows currently only compiles (see below), but
+      # leaving the documented opt-out set means switching it back to `cargo
+      # test` doesn't fail mysteriously. Release builds never set this.
       ACCORD_NO_ELEVATION_MANIFEST: "1"
     steps:
       - uses: actions/checkout@v4
@@ -96,7 +98,17 @@ jobs:
         working-directory: crates/accord-client
         run: npm run build
 
-      # Windows additionally needs CMake and a C compiler here: opus is built
-      # from vendored C source. Both ship on the windows-latest runner image.
       - name: Test the client
+        if: matrix.os == 'ubuntu-latest'
         run: cargo test -p accord-client
+
+      # Windows compiles but does not run: linking this crate there is slow, and
+      # the platform breakage this job exists to catch is type-level (the
+      # windows-core conflict that started it was 18 trait-bound errors), which
+      # `check` surfaces just as well. `--all-targets` matters - it type-checks
+      # test code too, where two of today's failures actually lived.
+      # Note this step needs CMake and a C compiler for opus's vendored source;
+      # both ship on the windows-latest runner image.
+      - name: Type-check the client
+        if: matrix.os == 'windows-latest'
+        run: cargo check -p accord-client --all-targets
