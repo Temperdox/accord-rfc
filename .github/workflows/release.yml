@@ -33,12 +33,21 @@ jobs:
           - os: ubuntu-latest
             args: ""
     runs-on: ${{ matrix.os }}
+    env:
+      # opus is compiled from the C source vendored in audiopus_sys, whose
+      # CMakeLists declares `cmake_minimum_required(VERSION 3.1)`. CMake 4 -
+      # which the runners now ship - refuses anything below 3.5 outright, so
+      # every platform's build died here. This is the escape hatch CMake's own
+      # error message points at, and it is only consulted by that vendored
+      # build. Linux additionally gets libopus-dev below, so it takes the
+      # pkg-config path and never reaches CMake at all.
+      CMAKE_POLICY_VERSION_MINIMUM: "3.5"
     steps:
       - uses: actions/checkout@v4
         with:
           persist-credentials: false
 
-      - name: Install Linux build dependencies (Tauri v2)
+      - name: Install Linux build dependencies (Tauri v2 + native audio)
         if: matrix.os == 'ubuntu-latest'
         run: |
           sudo apt-get update
@@ -47,7 +56,9 @@ jobs:
             build-essential curl wget file \
             libxdo-dev libssl-dev \
             libayatana-appindicator3-dev \
-            librsvg2-dev
+            librsvg2-dev \
+            libasound2-dev \
+            libopus-dev
 
       - uses: dtolnay/rust-toolchain@2c7215f132e9ebf062739d9130488b56d53c060c # stable
         with:

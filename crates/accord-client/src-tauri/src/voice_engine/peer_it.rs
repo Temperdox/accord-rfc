@@ -77,15 +77,16 @@ fn tone_frames(count: usize) -> Vec<Bytes> {
 
 /// Two peers negotiate through the relay and audio flows from one to the other.
 ///
-/// Ignored by default: it opens real UDP sockets and needs a working local
-/// network stack, and the `Playback` sink wants an audio device. Run with
+/// Silent by construction: both sides use [`Playback::silent`], so nothing
+/// reaches the machine's speakers. Ignored by default only because it opens
+/// real UDP sockets and needs a working local network stack. Run with
 /// `cargo test -p accord-client voice_call_round_trip -- --ignored --nocapture`.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-#[ignore = "opens UDP sockets and an audio device; run explicitly"]
+#[ignore = "opens real UDP sockets for ICE; run explicitly"]
 async fn voice_call_round_trip() {
     // Each sink receives what ITS side hears, keyed by the far device's id.
-    let sink_a = Arc::new(Playback::start(None, 1.0).expect("playback for A"));
-    let sink_b = Arc::new(Playback::start(None, 1.0).expect("playback for B"));
+    let sink_a = Arc::new(Playback::silent());
+    let sink_b = Arc::new(Playback::silent());
 
     let (tx_to_a, rx_a) = mpsc::unbounded_channel::<Envelope>();
     let (tx_to_b, rx_b) = mpsc::unbounded_channel::<Envelope>();
@@ -150,7 +151,7 @@ async fn voice_call_round_trip() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[ignore = "binds local UDP sockets for ICE gathering; run explicitly"]
 async fn answer_requires_an_offer_first() {
-    let playback = Arc::new(Playback::start(None, 1.0).expect("playback"));
+    let playback = Arc::new(Playback::silent());
     let collected: Arc<AsyncMutex<Vec<Envelope>>> = Arc::new(AsyncMutex::new(Vec::new()));
 
     struct Collector(Arc<AsyncMutex<Vec<Envelope>>>);

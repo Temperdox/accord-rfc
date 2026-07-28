@@ -328,14 +328,16 @@ mod tests {
         assert!(tail.iter().all(|s| *s == 0.0), "ends on silence");
     }
 
-    /// Ignored because it opens the real output device and makes a brief sound.
-    /// Run with `cargo test -p accord-client ringtone_opens -- --ignored`.
+    /// Opens the real output device, but at zero volume: every sample is
+    /// multiplied by the gain before it reaches the device, so this proves the
+    /// stream opens and runs without making a sound. A test must never play
+    /// audible audio - whoever runs it did not ask to be startled.
     #[test]
-    #[ignore = "opens the speakers and is briefly audible; run explicitly"]
+    #[ignore = "opens (but does not sound) the default output device; run explicitly"]
     fn ringtone_opens_the_output_device() {
-        let ringing = start(DEFAULT_ID, None, 0.2).expect("ringtone should start");
+        let ringing = start(DEFAULT_ID, None, 0.0).expect("ringtone should start");
         std::thread::sleep(std::time::Duration::from_millis(60));
-        drop(ringing); // dropping the stream is what stops the sound
+        drop(ringing); // dropping the stream is what stops playback
     }
 
     #[test]

@@ -321,7 +321,8 @@ impl MicCapture {
 /// Speaker playback: owns the cpal output stream and mixes every peer's decoded
 /// audio into it.
 pub struct Playback {
-    _stream: Stream,
+    /// `None` in tests - see [`Playback::silent`]. Dropping it stops playback.
+    _stream: Option<Stream>,
     peers: Arc<Mutex<HashMap<String, Vec<f32>>>>,
     levels: Arc<Mutex<HashMap<String, f32>>>,
     pub deafened: Arc<AtomicBool>,
@@ -438,12 +439,30 @@ impl Playback {
         tracing::info!(rate, channels, %format, "speaker playback started");
 
         Ok(Self {
-            _stream: stream,
+            _stream: Some(stream),
             peers,
             levels,
             deafened,
             volume,
         })
+    }
+
+    /// A sink that accepts and meters audio but opens no output device.
+    ///
+    /// Tests use this, and must: a test that opens the real speakers plays
+    /// whatever it is fed through the machine's actual output, at whatever
+    /// volume the test picked. That is startling at best and the test learns
+    /// nothing from it - the assertions read [`Playback::peer_levels`], which
+    /// works exactly the same here.
+    #[cfg(test)]
+    pub fn silent() -> Self {
+        Self {
+            _stream: None,
+            peers: Arc::new(Mutex::new(HashMap::new())),
+            levels: Arc::new(Mutex::new(HashMap::new())),
+            deafened: Arc::new(AtomicBool::new(false)),
+            volume: Arc::new(Mutex::new(1.0)),
+        }
     }
 
     /// Queue a decoded 48 kHz mono frame from `device_id` for playback.

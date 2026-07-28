@@ -52,12 +52,20 @@ jobs:
       # leaving the documented opt-out set means switching it back to `cargo
       # test` doesn't fail mysteriously. Release builds never set this.
       ACCORD_NO_ELEVATION_MANIFEST: "1"
+      # opus is compiled from the C source vendored in audiopus_sys, whose
+      # CMakeLists declares `cmake_minimum_required(VERSION 3.1)`; CMake 4 (on
+      # the runners now) refuses anything below 3.5. This is the escape hatch
+      # CMake's own error names, and only that vendored build consults it.
+      # Linux gets libopus-dev below and so never reaches CMake.
+      CMAKE_POLICY_VERSION_MINIMUM: "3.5"
     steps:
       - uses: actions/checkout@v4
         with:
           persist-credentials: false
 
-      - name: Install Linux build dependencies (Tauri v2)
+      # libasound2-dev is what cpal needs to build (alsa-sys); without it the
+      # Linux client build fails long before anything interesting is compiled.
+      - name: Install Linux build dependencies (Tauri v2 + native audio)
         if: matrix.os == 'ubuntu-latest'
         run: |
           sudo apt-get update
@@ -66,7 +74,9 @@ jobs:
             build-essential curl wget file \
             libxdo-dev libssl-dev \
             libayatana-appindicator3-dev \
-            librsvg2-dev
+            librsvg2-dev \
+            libasound2-dev \
+            libopus-dev
 
       - uses: dtolnay/rust-toolchain@2c7215f132e9ebf062739d9130488b56d53c060c # stable
         with:
