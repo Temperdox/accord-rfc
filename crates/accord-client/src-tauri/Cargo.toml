@@ -92,6 +92,16 @@ rand = { workspace = true, optional = true }
 # handles line up with these crates' types.
 [target.'cfg(windows)'.dependencies]
 webview2-com = "=0.38.2"
+# Not used in code - it documents a resolver constraint. cpal asks for
+# windows-core ">=0.61, <=0.62" while the `windows` crate is held at 0.61 by
+# tauri/webview2-com; given the choice the resolver takes 0.62 for cpal, whose
+# WASAPI backend then implements 0.62 traits for 0.61 interfaces and fails to
+# compile - breaking the Windows build only, invisibly from Linux.
+# Cargo.lock is what actually holds the line (0.61 and 0.62 are separate semver
+# groups, so this requirement alone does not force cpal's copy down). If a
+# `cargo update` ever reintroduces 0.62, re-run:
+#   cargo update -p windows-core@0.62.2 --precise 0.61.2
+windows-core = "=0.61.2"
 
 [target.'cfg(target_os = "linux")'.dependencies]
 webkit2gtk = "=2.0.2"
