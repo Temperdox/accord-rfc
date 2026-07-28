@@ -89,5 +89,16 @@ jobs:
           args: ${{ matrix.args }}
           tagName: ${{ github.ref_name }}
           releaseName: "Accord ${{ github.ref_name }}"
-          releaseDraft: true
+          # Published straight away rather than as a draft: these alphas exist
+          # to be handed to testers, and a draft is invisible to everyone
+          # without write access - so every release needed a manual click
+          # before anyone could download it. `prerelease` keeps them clearly
+          # marked and out of the "Latest release" slot.
+          #
+          # The draft step used to be the gate that caught a release where one
+          # platform silently failed to build; the CI workflow now compiles the
+          # client on Linux and Windows for every push, which catches that
+          # earlier and without the manual step. Set releaseDraft back to true
+          # to restore the old behaviour.
+          releaseDraft: false
           prerelease: true
